@@ -8,9 +8,7 @@ from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import classification_report, roc_auc_score
 
-# =========================================================
 # 1. ПРЕДКОМПИЛИРОВАННЫЕ РЕГУЛЯРКИ (Ускорение в 30+ раз)
-# =========================================================
 PLACEHOLDER_REGEX = [
     re.compile(r"\[[A-Za-zА-Яа-яЁё _]{2,30}\]"),
     re.compile(r"\{\{[a-zA-Z0-9_]+\}\}"),
@@ -83,19 +81,14 @@ def extract_html_features(html: str) -> dict:
                 hidden_elements_count += 1
         if tag.get("hidden") is not None:
             hidden_elements_count += 1
-
     # 2. Невидимые символы обфускации (Zero-Width bypass)
     zero_width_hits = len(ZERO_WIDTH_REGEX.findall(html))
-
     # 3. MSO комментарии (Маркер профессионального ESP шаблона)
     comments = soup.find_all(string=lambda s: isinstance(s, Comment))
     mso_comments = sum(1 for c in comments if "mso" in c.lower() or "[if" in c.lower())
-
     # 4. Современные теги HTML5 (Маркер LLM-генерации: ИИ забывает про Outlook)
     modern_tag_hits = sum(1 for tag in all_tags if tag.name.lower() in MODERN_HTML5_TAGS)
-
     doctype_present = int(html.strip().lower().startswith("<!doctype"))
-
     # Стилистика
     inline_styles = len(soup.find_all(attrs={"style": True}))
     class_attrs = len(soup.find_all(attrs={"class": True}))
@@ -188,9 +181,7 @@ def _empty_features() -> dict:
     return {k: 0 for k in keys}
 
 
-# =========================================================
 # 2. КЭШИРОВАННЫЙ КЛАСС ИНФЕРЕНСА (Загрузка в память 1 раз)
-# =========================================================
 class HTMLDetector:
     def __init__(self, model_path: str = "models/html_ai_detector.joblib"):
         self.model_path = model_path
@@ -239,10 +230,7 @@ def predict_html_features_and_score(html: str, model_path: str = "models/html_ai
         _detector_instance = HTMLDetector(model_path)
     return _detector_instance.predict(html)
 
-
-# =========================================================
 # 3. СКРИПТ ОБУЧЕНИЯ (Запуск при вызове напрямую)
-# =========================================================
 def train_html_model(human_dataset_path: str, ai_dataset_path: str, model_out: str = "models/html_ai_detector.joblib"):
     def load_records(path: str, default_label: int) -> pd.DataFrame:
         rows = []
