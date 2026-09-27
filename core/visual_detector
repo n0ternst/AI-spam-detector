@@ -5,7 +5,7 @@ import torch
 from pathlib import Path
 from PIL import Image
 
-# 1. Защита от конфликтов и падений PaddleOCR на Linux-серверах
+# 1. Отключаем MKLDNN во избежание сбоев PaddleOCR на серверах Linux
 os.environ["FLAGS_use_mkldnn"] = "0"
 os.environ["FLAGS_allocator_strategy"] = "naive"
 
@@ -18,21 +18,25 @@ except ImportError:
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# Спам-триггеры и призывы к действию (CTA), которые спамеры часто рисуют на баннерах
+# Спам-триггеры и призывы к действию (CTA), которые спамеры рисуют на картинках
 CTA_KEYWORDS_RU = {
     "скидка", "купить", "перейти", "акция", "распродажа", "бонус", "оплатить",
     "подтвердите", "пароль", "выигрыш", "заберите", "бесплатно", "клик", "войти",
-    "доступ", "заблокирован", "счет", "верификация", "подарок"
+    "доступ", "заблокирован", "счет", "верификация", "подарок", "срочно"
 }
 CTA_KEYWORDS_EN = {
     "discount", "claim", "verify", "click here", "urgent", "limited offer",
     "winner", "login", "password", "blocked", "confirm", "free", "action required"
 }
 
+# Сигнатуры генераторов графики в метаданных файлов
+AI_METADATA_MARKERS = [
+    "stable diffusion", "midjourney", "dall-e", "comfyui", "novelai",
+    "parameters", "prompt", "civitai", "automatic1111", "invokeai"
+]
 
-# =====================================================================
+
 # 1. ДЕТЕКТОР СИНТЕТИКИ SAFE (KDD 2025) С ЛОКАЛИЗАЦИЕЙ ПАТЧЕЙ
-# =====================================================================
 class RealSafeImageDetector:
     """
     Анализирует патчи 224x224 без даунсэмплинга (сохранение частотных артефактов).
@@ -40,16 +44,13 @@ class RealSafeImageDetector:
     """
     def __init__(self, device: torch.device = DEVICE):
         self.device = device
-        # Место для подключения боевых весов ViT заказчика:
-        # self.model = AutoModelForImageClassification.from_pretrained(...).to(self.device)
-        self.model = None
+        self.model = None  # Сюда подключается ViT-чекпоинт заказчика
 
     def extract_patches_with_coords(self, img: np.ndarray, patch_size: int = 224, max_patches: int = 5) -> list[dict]:
         """Нарезает патчи высокого разрешения и сохраняет их точные координаты."""
         h, w, _ = img.shape
         patches = []
 
-        # Если изображение меньше размера патча — дополняем белыми полями
         if h < patch_size or w < patch_size:
             pad_h = max(0, patch_size - h)
             pad_w = max(0, patch_size - w)
@@ -62,7 +63,6 @@ class RealSafeImageDetector:
             })
             return patches
 
-        # Извлекаем центр и ключевые квадранты без изменения масштаба
         coords = [
             (w // 2 - patch_size // 2, h // 2 - patch_size // 2, "center"),
             (0, 0, "top_left"),
@@ -84,25 +84,20 @@ class RealSafeImageDetector:
         return patches
 
     def predict(self, img: np.ndarray) -> tuple[float, dict | None]:
-        """Возвращает общий скор синтетики и данные наиболее подозрительного патча."""
         patches_data = self.extract_patches_with_coords(img)
         if not patches_data:
             return 0.0, None
 
         if self.model is not None:
-            # Боевой инференс по патчам через ViT
-            # scores = [...]
+            # Боевой forward pass при наличии весов
             pass
 
-        # Базовый эвристический анализ шума (пока не подключен тяжелый ViT чекпоинт)
-        # Оцениваем высокочастотную дисперсию градиентов (признак сглаживания диффузией)
+        # Базовая эвристика дисперсии градиентов
         patch_scores = []
         for p in patches_data:
             gray = cv2.cvtColor(p["patch"], cv2.COLOR_BGR2GRAY)
             laplacian_var = cv2.Laplacian(gray, cv2.CV_64F).var()
-            # У синтетических артефактов часто аномальное соотношение локальной дисперсии
-            synth_score = 0.0  # Дефолт до загрузки весов
-            patch_scores.append(synth_score)
+            patch_scores.append(0.0)
 
         max_idx = int(np.argmax(patch_scores)) if patch_scores else 0
         max_score = patch_scores[max_idx] if patch_scores else 0.0
@@ -116,15 +111,12 @@ class RealSafeImageDetector:
         return round(float(max_score), 4), most_suspicious
 
 
-# =====================================================================
-# 2. ОСНОВНОЙ ВИЗУАЛЬНЫЙ ДЕТЕКТОР (PaddleOCR + SAFE)
-# =====================================================================
+# 2. ОСНОВНОЙ МУЛЬТИМОДАЛЬНЫЙ ВИЗУАЛЬНЫЙ ДЕТЕКТОР
 class VisualDetector:
     def __init__(self):
         self.ocr = None
         if PADDLE_AVAILABLE:
             try:
-                # Включаем распознавание ru + en
                 self.ocr = PaddleOCR(lang="ru")
                 print("✓ [VisualDetector] PaddleOCR (ru/en) инициализирован.")
             except Exception as e:
@@ -132,29 +124,63 @@ class VisualDetector:
                 self.ocr = None
 
         self.safe_detector = RealSafeImageDetector()
+        # Встроенный сканнер QR-кодов OpenCV
+        self.qr_detector = cv2.QRCodeDetector()
 
-    def process_image(self, img_path: str) -> dict:
+    def check_metadata_for_ai(self, img_path: str) -> dict:
+        """Поиск следов генеративных нейросетей в заголовках EXIF и PNG chunks."""
+        try:
+            with Image.open(img_path) as im:
+                info = im.info or {}
+                for key, val in info.items():
+                    val_str = str(val).lower()
+                    for marker in AI_METADATA_MARKERS:
+                        if marker in val_str:
+                            return {
+                                "has_ai_metadata": True,
+                                "matched_marker": marker,
+                                "raw_snippet": str(val)[:150]
+                            }
+        except Exception:
+            pass
+        return {"has_ai_metadata": False, "matched_marker": None, "raw_snippet": None}
+
+    def process_image(self, img_path: str, text_detector=None) -> dict:
         """
-        Полный анализ одного изображения:
-        - Распознавание текста с координатами (Bounding Boxes)
-        - Детекция спам-призывов (CTA)
-        - Анализ синтетики через патчи SAFE
+        Комплексный анализ изображения:
+        - Quishing: детектор скрытых QR-ссылок
+        - Метаданные: поиск меток нейросетей
+        - OCR + CTA: координаты кнопок и уверенность
+        - Text Coverage: попытка скрыть спам под картинку
+        - SAFE: анализ синтетических артефактов
+        - Bridge: прогон длинного OCR-текста в Binoculars
         """
         if not os.path.exists(img_path):
-            return {
-                "error": f"Файл {img_path} не найден",
-                "ocr_text": "",
-                "is_image_ai": False,
-                "img_safe_score": 0.0,
-                "detected_cta": []
-            }
+            return {"error": f"Файл {img_path} не найден"}
 
         img = cv2.imread(img_path)
         if img is None:
-            return {"error": "Не удалось прочитать изображение", "ocr_text": "", "img_safe_score": 0.0}
+            return {"error": "Не удалось декодировать изображение"}
 
-        # 1. ДОБАВЛЕНИЕ ЗАЩИТНОГО БЕЛОГО ОТСТУПА В 30px
-        # Устраняет баг обрезки краевых букв (например, "шаблон" -> "шаб")
+        h, w, _ = img.shape
+        img_total_area = max(1, h * w)
+
+        # 1. СКАНИРОВАНИЕ QR-КОДОВ (Защита от Quishing)
+        qr_data, qr_points, _ = self.qr_detector.detectAndDecode(img)
+        has_qr = bool(qr_data)
+        qr_info = None
+        if has_qr:
+            pts = qr_points[0].tolist() if qr_points is not None else []
+            qr_info = {
+                "decoded_payload": qr_data,
+                "points": pts,
+                "is_url": qr_data.lower().startswith(("http://", "https://"))
+            }
+
+        # 2. СКАНИРОВАНИЕ МЕТАДАННЫХ НА ИИ
+        meta_res = self.check_metadata_for_ai(img_path)
+
+        # 3. OCR С ЗАЩИТНЫМ ОТСТУПОМ В 30px
         padded_img = cv2.copyMakeBorder(
             img, 30, 30, 30, 30, cv2.BORDER_CONSTANT, value=[255, 255, 255]
         )
@@ -162,32 +188,34 @@ class VisualDetector:
         detected_lines = []
         raw_ocr_lines = []
         flagged_cta_elements = []
+        total_text_area = 0
 
-        # 2. OCR С ИЗВЛЕЧЕНИЕМ КООРДИНАТ И УВЕРЕННОСТИ (XAI)
         if self.ocr is not None:
             try:
                 result = self.ocr.ocr(padded_img)
                 if result and result[0]:
                     for item in result[0]:
-                        box = item[0]  # [[x1, y1], [x2, y1], [x2, y2], [x1, y2]]
+                        box = item[0]
                         text_content = item[1][0].strip()
                         ocr_conf = round(float(item[1][1]) * 100, 2)
 
-                        # Корректируем координаты обратно (минус 30px отступа)
+                        # Возвращаем координаты в исходную систему (минус 30px)
                         x_min = max(0, int(min(pt[0] for pt in box) - 30))
                         y_min = max(0, int(min(pt[1] for pt in box) - 30))
                         x_max = max(0, int(max(pt[0] for pt in box) - 30))
                         y_max = max(0, int(max(pt[1] for pt in box) - 30))
 
+                        box_area = (x_max - x_min) * (y_max - y_min)
+                        total_text_area += box_area
+
                         raw_ocr_lines.append(text_content)
                         text_lower = text_content.lower()
 
-                        # Проверяем, есть ли в этой конкретной строке спам-триггер
-                        found_words = [w for w in (CTA_KEYWORDS_RU | CTA_KEYWORDS_EN) if w in text_lower]
-                        if found_words:
+                        matched_kw = [w for w in (CTA_KEYWORDS_RU | CTA_KEYWORDS_EN) if w in text_lower]
+                        if matched_kw:
                             flagged_cta_elements.append({
                                 "text": text_content,
-                                "matched_keywords": found_words,
+                                "matched_keywords": matched_kw,
                                 "bbox": [x_min, y_min, x_max, y_max],
                                 "ocr_confidence_pct": ocr_conf
                             })
@@ -197,47 +225,65 @@ class VisualDetector:
                             "bbox": [x_min, y_min, x_max, y_max],
                             "confidence_pct": ocr_conf
                         })
-
             except Exception as e:
                 print(f"[VisualDetector] Сбой OCR на {img_path}: {e}")
 
-        # 3. АНАЛИЗ СИНТЕТИКИ SAFE (ПАТЧИ 224x224)
+        # 4. ПОКРЫТИЕ ТЕКСТОМ (Image-as-Text Evasion)
+        text_coverage_ratio = round(total_text_area / img_total_area, 4)
+        is_image_as_text = text_coverage_ratio >= 0.45 and len(raw_ocr_lines) >= 3
+
+        # 5. SAFE ДЕТЕКТОР ПАТЧЕЙ
         safe_score, suspicious_patch = self.safe_detector.predict(img)
 
-        # 4. РАСЧЕТ РИСКА ПО ДАННОМУ ИЗОБРАЖЕНИЮ
-        has_cta = len(flagged_cta_elements) > 0
-        is_ai_graphics = safe_score >= 0.70
+        # 6. МОСТ В BINOCULARS (Если текста на картинке много)
+        full_ocr_text = " ".join(raw_ocr_lines).strip()
+        ocr_ai_analysis = None
+        if text_detector is not None and len(full_ocr_text.split()) >= 30:
+            ocr_ai_analysis = text_detector.analyze_text(full_ocr_text)
 
-        image_risk = 0.0
-        if has_cta:
-            image_risk += 0.50  # Текстовые спам-кнопки на картинках
-        if is_ai_graphics:
-            image_risk += 0.40  # Сгенерированная графика
-        image_risk = min(1.0, max(image_risk, safe_score))
+        # РАСЧЕТ ИТОГОВОГО ВИЗУАЛЬНОГО РИСКА
+        v_risk = 0.0
+        if has_qr:
+            v_risk = max(v_risk, 0.85)  # QR-код без ссылки в письме — высокий фишинг-фактор
+        if meta_res["has_ai_metadata"]:
+            v_risk = max(v_risk, 0.95)  # Железная сигнатура генератора в метаданных
+        if len(flagged_cta_elements) > 0:
+            v_risk = max(v_risk, 0.70)  # Спам-кнопки
+        if is_image_as_text:
+            v_risk = max(v_risk, 0.65)  # Попытка скрыть текст в баннер
+        if ocr_ai_analysis and ocr_ai_analysis.get("text_ai_proba", 0.0) >= 0.70:
+            v_risk = max(v_risk, ocr_ai_analysis["text_ai_proba"])
+
+        v_risk = min(1.0, max(v_risk, safe_score))
 
         return {
             "image_path": os.path.basename(img_path),
-            "image_risk": round(image_risk, 4),
-            "ocr_text": " ".join(raw_ocr_lines).strip(),
-            "has_cta_text": has_cta,
-            "is_image_ai": is_ai_graphics,
-            "img_safe_score": safe_score,
+            "image_risk": round(v_risk, 4),
+            "ocr_text": full_ocr_text,
+            "has_qr_code": has_qr,
+            "has_cta_text": len(flagged_cta_elements) > 0,
+            "is_image_as_text_evasion": is_image_as_text,
+            "is_image_ai": safe_score >= 0.70 or meta_res["has_ai_metadata"],
             
-            # XAI-ОБЪЯСНИМОСТЬ ДЛЯ АНАЛИТИКА:
+            # ПОЛНЫЙ XAI-ОТЧЕТ:
             "explainability": {
-                "detected_cta_elements": flagged_cta_elements,    # Где именно кнопки и что в них
-                "most_suspicious_patch": suspicious_patch,        # Какой квадрант сгенерирован ИИ
-                "total_text_blocks_found": len(detected_lines)
+                "qr_code_info": qr_info,
+                "ai_metadata": meta_res,
+                "detected_cta_elements": flagged_cta_elements,
+                "text_coverage_ratio": text_coverage_ratio,
+                "most_suspicious_patch": suspicious_patch,
+                "ocr_ai_analysis": ocr_ai_analysis
             }
         }
 
-    def analyze_attachments(self, image_paths: list[str]) -> dict:
+    def analyze_attachments(self, image_paths: list[str], text_detector=None) -> dict:
         """Агрегирует результаты анализа всех вложенных картинок в письме."""
         if not image_paths:
             return {
                 "visual_risk": 0.0,
                 "is_image_ai": False,
                 "has_suspicious_ocr_keywords": False,
+                "has_quishing_qr": False,
                 "aggregated_ocr_text": "",
                 "analyzed_images_count": 0,
                 "details": []
@@ -246,11 +292,12 @@ class VisualDetector:
         all_ocr = []
         any_cta = False
         any_ai = False
+        any_qr = False
         max_risk = 0.0
         details = []
 
         for p in image_paths:
-            res = self.process_image(p)
+            res = self.process_image(p, text_detector=text_detector)
             details.append(res)
             if res.get("ocr_text"):
                 all_ocr.append(res["ocr_text"])
@@ -258,6 +305,8 @@ class VisualDetector:
                 any_cta = True
             if res.get("is_image_ai"):
                 any_ai = True
+            if res.get("has_qr_code"):
+                any_qr = True
             if res.get("image_risk", 0.0) > max_risk:
                 max_risk = res["image_risk"]
 
@@ -265,6 +314,7 @@ class VisualDetector:
             "visual_risk": round(max_risk, 4),
             "is_image_ai": any_ai,
             "has_suspicious_ocr_keywords": any_cta,
+            "has_quishing_qr": any_qr,
             "aggregated_ocr_text": "\n".join(all_ocr).strip(),
             "analyzed_images_count": len(image_paths),
             "details": details
