@@ -449,4 +449,6 @@ catboost_info/
 mutated_spam_dataset.jsonl
 final_features.csv
 final_features.parquet
-AI_generated_emails (1)/
+AI_generated_emails/
+*.jsonl
+images/

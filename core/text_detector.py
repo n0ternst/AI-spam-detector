@@ -1,15 +1,72 @@
+import os
 import re
-import math
 import gc
-import numpy as np
+import json
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
+import numpy as np
+import pandas as pd
+from transformers import AutoTokenizer, AutoModelForCausalLM
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# 1. СИНТАКСИС ПРЕДЛОЖЕНИЙ
+# Коэффициенты логистической регрессии (8 признаков)
+CONFIG = {
+    "ru": {
+        "weights": np.array([4.46094, -11.41842, 8.33193, -0.00539, -0.00318, -3.62979, 0.34151, 0.02739], dtype=np.float64),
+        "bias": 5.09906,
+        "t_strict": 0.8472,
+        "t_soft": 0.7236
+    },
+    "eng": {
+        "weights": np.array([4.41917, -3.59224, 7.92443, -0.03285, -0.00617, -3.05382, 0.22090, 0.33094], dtype=np.float64),
+        "bias": -3.36463,
+        "t_strict": 0.8730,
+        "t_soft": 0.7628
+    }
+}
+
+FEATURE_NAMES = [
+    "bino_min", "bino_mean", "bino_var",
+    "avg_sent_len", "sent_len_var", "short_sent_ratio",
+    "root_ttr", "word_len_var"
+]
+
+
+def clean_text_for_scoring(text: str) -> str:
+    """Глубокая очистка текста от технических артефактов перед токенизацией."""
+    if not text:
+        return ""
+
+    # 1. Замена URL и веб-адресов
+    text = re.sub(r'https?://\S+|www\.\S+', ' [ссылка] ', text)
+
+    # 2. Маскирование номеров телефонов (RU/международные)
+    phone_pattern = r'(\+?\d{1,3}[\s\-]?)?(\(?\d{2,4}\)?[\s\-]?)?\d{3}[\s\-]?\d{2}[\s\-]?\d{2}'
+    text = re.sub(phone_pattern, ' [телефон] ', text)
+
+    # 3. Вырезание остатков CSS, MSO и шрифтовых директив
+    text = re.sub(r'@import\s+url\([^)]*\);?', ' ', text)
+    text = re.sub(r'@[a-zA-Z\-]+\s*\{[^}]*\}', ' ', text)
+    text = re.sub(r'(\b(color|background|font|margin|padding|border|width|display|mso-[a-z\-]+)\s*:[^;]+;)+', ' ', text, flags=re.I)
+
+    # 4. Удаление шаблонных тегов Jinja / ESP
+    text = re.sub(r'\{\{[^}]+\}\}|\{%\s*[^%]+\s*%\}|\[[A-Z_]{3,20}\]', ' ', text)
+
+    # 5. Схлопывание пробелов и неразрывных пробелов
+    text = text.replace('\xa0', ' ')
+    return " ".join(text.split()).strip()
+
+
+def detect_language(text: str) -> str:
+    """Определяет доминирующий язык текста (ru или eng)."""
+    cyrillic = len(re.findall(r'[а-яА-ЯёЁ]', text))
+    latin = len(re.findall(r'[a-zA-Z]', text))
+    return "ru" if cyrillic >= latin else "eng"
+
+
 def extract_sentence_stats(text: str) -> tuple[float, float, float]:
-    if not text or len(text.split()) < 4:
+    """Синтаксические фичи вариативности длины предложений."""
+    if not text or len(text.strip()) < 10:
         return 0.0, 0.0, 0.0
 
     sentences = [s.strip() for s in re.split(r'[.!?]+', text) if s.strip()]
@@ -23,56 +80,31 @@ def extract_sentence_stats(text: str) -> tuple[float, float, float]:
     return avg_len, len_var, short_ratio
 
 
-# 2. ЭВРИСТИКИ NO-AI-SLOP
-SLOP_BUZZWORDS_EN = {"delve", "tapestry", "crucial", "pivotal", "testament", "beacon", "multifaceted", "paramount", "harness", "foster"}
-SLOP_BUZZWORDS_RU = {"погрузиться", "гобелен", "неотъемлемый", "краеугольный", "симфония", "свидетельство", "многогранный", "бесшовный"}
+def extract_robust_word_features(text: str) -> tuple[float, float]:
+    """Лексические фичи разнообразия (Root TTR) и вариативности длины слов."""
+    if not isinstance(text, str) or len(text.strip()) < 10:
+        return 0.0, 0.0
 
-THROAT_CLEARING_PATTERNS = [
-    r"\bhere'?s\s+the\s+thing\b", r"\blet'?s\s+dive\s+in\b", r"\bin\s+today'?s\s+fast-paced\b",
-    r"\bit'?s\s+important\s+to\s+note\b", r"\bважно\s+(?:понимать|отметить)\b", r"\bстоит\s+отметить\b"
-]
+    words = re.findall(r'\b[^\W\d_]+\b', text.lower())
+    n_words = len(words)
+    if n_words == 0:
+        return 0.0, 0.0
 
-BINARY_CONTRAST_PATTERNS = [
-    r"\b(?:it'?s|this\s+is)\s+not\s+(?:just|only)\b.*?\b(?:it'?s|it\s+is)\b",
-    r"\bnot\s+only\b.*?\bbut\s+also\b", r"\bне\s+просто\b.*?\bа\b", r"\bне\s+только\b.*?\bно\s+и\b"
-]
-
-def extract_ai_slop_features(text: str) -> dict:
-    if not text or len(text.strip()) < 10:
-        return {"slop_buzzwords": 0, "slop_throat_clearing": 0, "slop_binary_contrast": 0, "slop_em_dashes": 0.0}
-
-    text_lower = text.lower()
-    words = re.findall(r'\b\w+\b', text_lower)
-    sentences = [s.strip() for s in re.split(r'[.!?]+', text) if s.strip()]
-    num_sentences = max(1, len(sentences))
-
-    buzzwords_hit = sum(1 for w in words if w in SLOP_BUZZWORDS_EN or w in SLOP_BUZZWORDS_RU)
-    first_two_sent = " ".join(sentences[:2]).lower() if sentences else text_lower
-    throat_hit = int(any(re.search(p, first_two_sent) for p in THROAT_CLEARING_PATTERNS))
-    contrast_hit = sum(len(re.findall(p, text_lower)) for p in BINARY_CONTRAST_PATTERNS)
-    em_dashes_ratio = float(len(re.findall(r'[—–]|--', text)) / num_sentences)
-
-    return {
-        "slop_buzzwords": buzzwords_hit,
-        "slop_throat_clearing": throat_hit,
-        "slop_binary_contrast": contrast_hit,
-        "slop_em_dashes": round(em_dashes_ratio, 4)
-    }
+    root_ttr = float(len(set(words)) / np.sqrt(n_words))
+    word_lengths = [len(w) for w in words]
+    word_len_var = float(np.var(word_lengths)) if len(word_lengths) > 1 else 0.0
+    return root_ttr, word_len_var
 
 
-# 3. BINOCULARS С МИКРО-ЛОКАЛИЗАЦИЕЙ (XAI SPAN HEATMAP)
-class BinocularsDetector:
+class TextDetector:
     def __init__(
         self,
-        observer_name: str = "Qwen/Qwen2.5-1.5B",
-        performer_name: str = "Qwen/Qwen2.5-1.5B-Instruct",
-        device: torch.device = DEVICE,
-        b_0: float = 0.9015,
-        k: float = 35.0
+        observer_name: str = "Qwen/Qwen2.5-3B",
+        performer_name: str = "Qwen/Qwen2.5-3B-Instruct",
+        device: torch.device = DEVICE
     ):
         self.device = device
-        self.b_0 = b_0
-        self.k = k
+        print(f"[TextDetector] Загрузка {observer_name} и {performer_name} на {self.device}...")
 
         self.tokenizer = AutoTokenizer.from_pretrained(observer_name)
         if self.tokenizer.pad_token is None:
@@ -95,6 +127,7 @@ class BinocularsDetector:
         gc.collect()
         if self.device.type == "cuda":
             torch.cuda.empty_cache()
+        print("[TextDetector] ✓ Модели инициализированы.")
 
     @torch.inference_mode()
     def _score_tokens(self, input_ids: torch.Tensor) -> float:
@@ -107,6 +140,7 @@ class BinocularsDetector:
         obs_log_probs = torch.log_softmax(obs_logits, dim=-1)
         obs_gathered = torch.gather(obs_log_probs, dim=-1, index=shift_labels.unsqueeze(-1)).squeeze(-1)
         log_ppl = -obs_gathered.mean().item()
+        del obs_out, obs_logits, shift_labels
 
         perf_out = self.performer(input_ids=input_ids, attention_mask=attention_mask, use_cache=False)
         perf_logits = perf_out.logits[..., :-1, :].float()
@@ -115,116 +149,122 @@ class BinocularsDetector:
         perf_probs = torch.exp(perf_log_probs)
         cross_entropy = -(perf_probs * obs_log_probs).sum(dim=-1)
         log_x_ppl = cross_entropy.mean().item()
+        del perf_out, perf_logits, perf_log_probs, perf_probs, obs_log_probs, cross_entropy, attention_mask
 
         return float(log_ppl / log_x_ppl if log_x_ppl != 0 else 1.0)
 
     @torch.inference_mode()
-    def analyze_text(self, text: str, window_size: int = 50, step: int = 15, confidence_threshold: float = 65.0) -> dict:
-        """
-        Возвращает скоры И ТОЧНУЮ КАРТУ СГЕНЕРИРОВАННЫХ ОТРЕЗКОВ:
-        где началось, где закончилось, точная цитата и уверенность в %.
-        """
-        word_count = len(text.split())
-        avg_len, len_var, short_ratio = extract_sentence_stats(text)
-        slop = extract_ai_slop_features(text)
+    def compute_bino_features(self, clean_text: str, window_size: int = 50, step: int = 15, max_tokens: int = 1024) -> dict:
+        if not clean_text or len(clean_text) < 10:
+            return {"bino_min": 1.0, "bino_mean": 1.0, "bino_var": 0.0, "most_ai_chunk": ""}
 
-        # Защита ультракоротких сообщений
-        if not text or word_count < 30:
+        try:
+            inputs = self.tokenizer(clean_text, return_tensors="pt", truncation=False)
+            input_ids = inputs["input_ids"][:, :max_tokens].to(self.device)
+            total_tokens = input_ids.shape[1]
+
+            if total_tokens <= window_size:
+                score = self._score_tokens(input_ids)
+                chunk_str = self.tokenizer.decode(input_ids[0], skip_special_tokens=True).strip()
+                del input_ids
+                return {
+                    "bino_min": round(float(score), 4),
+                    "bino_mean": round(float(score), 4),
+                    "bino_var": 0.0,
+                    "most_ai_chunk": chunk_str
+                }
+
+            scores, windows = [], []
+            for start in range(0, total_tokens - window_size + 1, step):
+                w_ids = input_ids[:, start:start + window_size]
+                scores.append(self._score_tokens(w_ids))
+                windows.append(w_ids)
+
+            del input_ids
+            scores_np = np.asarray(scores, dtype=np.float32)
+            min_idx = int(np.argmin(scores_np))
+            best_chunk = self.tokenizer.decode(windows[min_idx][0], skip_special_tokens=True).strip()
+
             return {
-                "text_ai_proba": 0.0,
-                "is_ai": False,
-                "bino_min": 1.0,
-                "bino_mean": 1.0,
-                "bino_var": 0.0,
-                "avg_sent_len": round(avg_len, 2),
-                "sent_len_var": round(len_var, 2),
-                "short_sent_ratio": round(short_ratio, 2),
-                "slop": slop,
-                "most_ai_chunk": None,
-                "detected_ai_spans": []  # Список найденных зон
+                "bino_min": round(float(np.min(scores_np)), 4),
+                "bino_mean": round(float(np.mean(scores_np)), 4),
+                "bino_var": round(float(np.var(scores_np)), 6),
+                "most_ai_chunk": best_chunk
+            }
+        except Exception as e:
+            print(f"[TextDetector] Ошибка токенизации: {e}")
+            return {"bino_min": 1.0, "bino_mean": 1.0, "bino_var": 0.0, "most_ai_chunk": ""}
+
+    def predict(self, raw_text: str, force_lang: str | None = None) -> dict:
+        """Полный цикл: предобработка -> 8 признаков -> логистическая регрессия -> вероятность."""
+        clean_text = clean_text_for_scoring(raw_text)
+        words = clean_text.split()
+
+        # на очень коротких текстах стилометрия не информативна
+        if len(words) < 20:
+            return {
+                "text_prob": 0.0,
+                "lang": force_lang or "ru",
+                "clean_text": clean_text,
+                "features": {f: 0.0 for f in FEATURE_NAMES},
+                "most_ai_chunk": "",
+                "status": "TOO_SHORT"
             }
 
-        # Включаем offset_mapping для точной привязки к символам исходного текста
-        inputs = self.tokenizer(text, return_offsets_mapping=True, return_tensors="pt", truncation=False)
-        offset_mapping = inputs["offset_mapping"][0].cpu().numpy()
-        input_ids = inputs["input_ids"].to(self.device)
-        total_tokens = input_ids.shape[1]
+        lang = force_lang or detect_language(clean_text)
+        cfg = CONFIG.get(lang, CONFIG["ru"])
 
-        def get_confidence_pct(score_val: float) -> float:
-            return round((1.0 / (1.0 + math.exp(-self.k * (self.b_0 - score_val)))) * 100.0, 2)
+        # 1. Binoculars
+        bino_res = self.compute_bino_features(clean_text)
 
-        raw_spans = []
-        scores = []
+        # 2. Синтаксис предложений
+        avg_len, len_var, short_ratio = extract_sentence_stats(clean_text)
 
-        if total_tokens <= window_size:
-            score = self._score_tokens(input_ids)
-            conf = get_confidence_pct(score)
-            scores.append(score)
-            if conf >= confidence_threshold:
-                raw_spans.append({
-                    "start_char": int(offset_mapping[0][0]),
-                    "end_char": int(offset_mapping[-1][1]),
-                    "text_segment": text.strip(),
-                    "confidence_pct": conf,
-                    "bino_score": round(score, 4)
-                })
-        else:
-            for start in range(0, total_tokens - window_size + 1, step):
-                end = start + window_size
-                w_ids = input_ids[:, start:end]
-                s = self._score_tokens(w_ids)
-                scores.append(s)
-                conf = get_confidence_pct(s)
+        # 3. Лексика слов
+        root_ttr, word_len_var = extract_robust_word_features(clean_text)
 
-                if conf >= confidence_threshold:
-                    start_char = int(offset_mapping[start][0])
-                    end_char = int(offset_mapping[end - 1][1])
-                    segment_str = text[start_char:end_char].strip()
-
-                    raw_spans.append({
-                        "start_char": start_char,
-                        "end_char": end_char,
-                        "text_segment": segment_str,
-                        "confidence_pct": conf,
-                        "bino_score": round(s, 4)
-                    })
-
-        scores = np.asarray(scores, dtype=np.float32)
-        min_idx = int(np.argmin(scores)) if len(scores) > 0 else 0
-        b_min = float(scores[min_idx]) if len(scores) > 0 else 1.0
-        b_mean = float(np.mean(scores)) if len(scores) > 0 else 1.0
-        b_var = float(np.var(scores)) if len(scores) > 0 else 0.0
-
-        # Склеиваем перекрывающиеся зоны генерации в сплошные абзацы
-        merged_spans = []
-        if raw_spans:
-            raw_spans.sort(key=lambda x: x["start_char"])
-            merged_spans = [raw_spans[0]]
-
-            for cur in raw_spans[1:]:
-                prev = merged_spans[-1]
-                # Если зоны пересекаются или идут вплотную друг к другу
-                if cur["start_char"] <= prev["end_char"] + 15:
-                    prev["end_char"] = max(prev["end_char"], cur["end_char"])
-                    prev["confidence_pct"] = max(prev["confidence_pct"], cur["confidence_pct"])
-                    prev["bino_score"] = min(prev["bino_score"], cur["bino_score"])
-                    prev["text_segment"] = text[prev["start_char"]:prev["end_char"]].strip()
-                else:
-                    merged_spans.append(cur)
-
-        overall_proba = round(1.0 / (1.0 + math.exp(-self.k * (self.b_0 - b_min))), 4)
-        most_ai = merged_spans[0]["text_segment"] if merged_spans else None
-
-        return {
-            "text_ai_proba": overall_proba,
-            "is_ai": overall_proba >= 0.65,
-            "bino_min": round(b_min, 4),
-            "bino_mean": round(b_mean, 4),
-            "bino_var": round(b_var, 6),
+        feats_dict = {
+            "bino_min": bino_res["bino_min"],
+            "bino_mean": bino_res["bino_mean"],
+            "bino_var": bino_res["bino_var"],
             "avg_sent_len": round(avg_len, 2),
             "sent_len_var": round(len_var, 2),
             "short_sent_ratio": round(short_ratio, 2),
-            "slop": slop,
-            "most_ai_chunk": most_ai,
-            "detected_ai_spans": merged_spans  # ВСЕ ЗОНЫ С КООРДИНАТАМИ И % УВЕРЕННОСТИ!
+            "root_ttr": round(root_ttr, 4),
+            "word_len_var": round(word_len_var, 2)
         }
+
+        # 4. Логистическая регрессия
+        x_vec = np.array([feats_dict[f] for f in FEATURE_NAMES], dtype=np.float64)
+        logit = float(np.dot(x_vec, cfg["weights"]) + cfg["bias"])
+        logit = np.clip(logit, -20.0, 20.0)
+        prob = float(1.0 / (1.0 + np.exp(-logit)))
+
+        return {
+            "text_prob": round(prob, 4),
+            "lang": lang,
+            "clean_text": clean_text,
+            "features": feats_dict,
+            "most_ai_chunk": bino_res["most_ai_chunk"],
+            "t_strict": cfg["t_strict"],
+            "t_soft": cfg["t_soft"],
+            "status": "STRICT_AI" if prob >= cfg["t_strict"] else ("SOFT_AI" if prob >= cfg["t_soft"] else "CLEAN")
+        }
+
+    def batch_enrich(self, input_jsonl: str, output_jsonl: str):
+        """Пакетная разметка jsonl файла 8 признаками и P(AI)."""
+        df = pd.read_json(input_jsonl, lines=True)
+        results = []
+        for _, row in df.iterrows():
+            item = row.to_dict()
+            res = self.predict(item.get("text", ""))
+            item.update(res["features"])
+            item["text_prob"] = res["text_prob"]
+            item["most_ai_chunk"] = res["most_ai_chunk"]
+            results.append(item)
+            if self.device.type == "cuda":
+                torch.cuda.empty_cache()
+
+        out_df = pd.DataFrame(results)
+        out_df.to_json(output_jsonl, orient="records", lines=True, force_ascii=False)
+        print(f"[TextDetector] ✓ Размечено {len(out_df)} строк в {output_jsonl}")

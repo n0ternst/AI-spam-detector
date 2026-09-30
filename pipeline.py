@@ -1,139 +1,215 @@
 import os
 import sys
 import json
-import shutil
+import argparse
 from pathlib import Path
 
-from core.parser import parse_eml
-from core.htmlModule import predict_html_features_and_score
-from core.text_detector import BinocularsDetector
-from core.visual_detector import VisualDetector
+# Импорт парсера и детекторов
+try:
+    from core.parser import parse_eml
+except ImportError:
+    from parser import parse_eml
 
-BASE_DIR = Path(__file__).resolve().parent
-HTML_MODEL_PATH = str(BASE_DIR / "models" / "html_ai_detector.joblib")
-
-print("[Pipeline] Инициализация моделей (Text & Vision)...")
-text_detector = BinocularsDetector()
-visual_detector = VisualDetector()
-print("[Pipeline] Модели успешно загружены в память.")
+from core.html_detector import HTMLDetector
+from core.text_detector import TextDetector
 
 
-def scan_email(eml_path: str, cleanup_temp: bool = True) -> dict:
-    if not os.path.exists(eml_path):
-        return {"error": f"Файл {eml_path} не найден"}
+class SpamAiPipeline:
+    def __init__(self):
+        print("\n" + "=" * 60)
+        print("ИНИЦИАЛИЗАЦИЯ СИСТЕМЫ ДЕТЕКЦИИ DR.WEB (LATE FUSION)")
+        print("=" * 60)
+        self.html_detector = HTMLDetector()
+        self.text_detector = TextDetector()
+        print("✓ Конвейер готов к работе.\n")
 
-    # 1. MIME-парсинг
-    email_data = parse_eml(eml_path)
-    raw_html = email_data.get("raw_html", "")
-    clean_text = email_data.get("clean_text", "")
-    attachments = email_data.get("attachments", [])
-    extract_dir = email_data.get("extract_dir")
+    def evaluate_html_risk(self, feats: dict) -> tuple[float, list[str]]:
+        """
+        Калиброванная оценка риска верстки по правилам фильтрации Dr.Web.
+        """
+        reasons = []
+        risk = 0.0
 
-    try:
-        # 2. Поток HTML
-        html_res = predict_html_features_and_score(raw_html, HTML_MODEL_PATH)
-        h_feats = html_res.get("features", {})
-        h_risk = float(html_res.get("html_ai_proba", 0.0))
+        hidden = feats.get("hidden_elements_count", 0)
+        dummy = feats.get("dummy_link_count", 0)
+        forms = feats.get("has_forms", 0)
+        iframes = feats.get("has_iframes", 0)
+        zw = feats.get("zero_width_chars_count", 0)
 
-        # 3. Поток Текста (Binoculars + Синтаксис + Spans)
-        text_res = text_detector.analyze_text(clean_text)
-        t_risk = float(text_res.get("text_ai_proba", 0.0))
+        # 1. Жесткие триггеры фишинга и укрывательства (Hard Triggers)
+        if forms == 1:
+            risk = max(risk, 0.95)
+            reasons.append("CREDENTIAL_PHISHING_FORM")
 
-        # 4. Поток Визуальный (PaddleOCR + Quishing + SAFE)
-        visual_res = visual_detector.analyze_attachments(attachments, text_detector=text_detector)
-        v_risk = float(visual_res.get("visual_risk", 0.0))
+        if iframes == 1:
+            risk = max(risk, 0.92)
+            reasons.append("HIDDEN_IFRAME_PAYLOAD")
 
-        # 5. Диспетчер вердикта (Decoupled Late Fusion)
-        reason_codes = []
+        if hidden >= 4:
+            risk = max(risk, 0.88)
+            reasons.append(f"MASSIVE_HIDDEN_CSS({hidden})")
 
-        # Жесткие триггеры
-        if h_feats.get("has_forms", 0) > 0:
-            reason_codes.append("PHISHING_CREDENTIAL_FORM_DETECTED")
-        if h_feats.get("has_iframes", 0) > 0:
-            reason_codes.append("EMBEDDED_IFRAME_EXPLOIT")
-        if h_feats.get("malicious_hidden_chars", 0) > 200:
-            reason_codes.append("MALICIOUS_HIDDEN_TEXT_STUFFING")
-        if h_feats.get("dummy_link_count", 0) > 0:
-            reason_codes.append("EXTERNAL_SUSPICIOUS_REDIRECT")
-        if visual_res.get("has_quishing_qr"):
-            reason_codes.append("QUISHING_QR_CODE_DETECTED")
+        if hidden >= 2 and dummy >= 2:
+            risk = max(risk, 0.90)
+            reasons.append(f"PHISHING_LINK_MASKING(hidden={hidden}, dummy_links={dummy})")
 
-        # Текстовые и структурные маркеры ИИ
-        if t_risk >= 0.80:
-            reason_codes.append("HIGH_AI_SYNTACTIC_CONFIDENCE")
-        if text_res.get("sent_len_var", 10.0) < 3.0 and len(clean_text.split()) >= 30:
-            reason_codes.append("SYNTAX_MONOTONY")
-        if h_feats.get("modern_html5_tags_count", 0) >= 2 and h_feats.get("has_mso_comments", 0) == 0:
-            reason_codes.append("AI_GENERATED_HTML_STRUCTURE")
+        # 2. Мягкие триггеры верстки (Soft Indicators)
+        if dummy >= 3:
+            risk = max(risk, 0.65)
+            reasons.append(f"DUMMY_OR_TEMPLATE_LINKS({dummy})")
 
-        # Визуальные спам-кнопки
-        if visual_res.get("has_suspicious_ocr_keywords"):
-            reason_codes.append("EMBEDDED_IMAGE_CALL_TO_ACTION")
+        if zw > 1000:
+            risk = max(risk, 0.70)
+            reasons.append(f"SUSPICIOUS_ZERO_WIDTH_PADDING({zw})")
 
-        # Взвешенная сумма рисков
-        weighted_risk = (0.5 * h_risk) + (0.3 * v_risk) + (0.2 * t_risk)
+        if feats.get("modern_html5_tags_count", 0) >= 3:
+            risk = max(risk, 0.40)
+            reasons.append(f"LLM_SYNTHETIC_HTML5_LAYOUT({feats['modern_html5_tags_count']})")
 
-        # Амплификация
-        if h_risk >= 0.40 and t_risk >= 0.70:
-            weighted_risk = min(1.0, weighted_risk + 0.25)
-            reason_codes.append("AI_AMPLIFIED_MALICIOUS_TEMPLATE")
+        if feats.get("data_uri_count", 0) >= 2:
+            risk = max(risk, 0.50)
+            reasons.append("EMBEDDED_BASE64_PAYLOAD")
 
-        # Итоговый вердикт
-        is_hard_blocked = (
-            h_feats.get("has_forms", 0) > 0
-            or h_feats.get("has_iframes", 0) > 0
-            or h_feats.get("malicious_hidden_chars", 0) > 200
-            or visual_res.get("has_quishing_qr", False)
-        )
+        return round(risk, 2), reasons
 
-        if is_hard_blocked:
-            final_risk = max(0.85, weighted_risk)
-            verdict = "SUSPICIOUS_SPAM"
-        elif weighted_risk >= 0.60:
-            final_risk = weighted_risk
-            verdict = "SUSPICIOUS_SPAM"
-        elif t_risk >= 0.75 and weighted_risk < 0.60:
-            final_risk = weighted_risk
-            verdict = "AI_ASSISTED_HAM"
-            reason_codes.append("AI_ASSISTED_CONTENT_CLEAN_ORIGIN")
-        else:
-            final_risk = weighted_risk
-            verdict = "CLEAN_HAM"
+    def aggregate_verdict(self, html_risk: float, html_reasons: list[str], text_res: dict) -> dict:
+        """
+        Иерархическая логика Late Fusion:
+        1. Hard Trigger верстки (фишинг/формы) -> Блокировка
+        2. Strict Trigger текста (P(AI) >= T_strict) -> AI Спам
+        3. Composite Synergy (пред-пороговые значения обоих модулей) -> Серая зона
+        4. Чистое письмо (Ham)
+        """
+        reasons = []
+        p_ai = text_res.get("text_prob", 0.0)
+        t_strict = text_res.get("t_strict", 0.85)
+        t_soft = text_res.get("t_soft", 0.72)
+
+        # 1. Приоритет критических уязвимостей разметки
+        if html_risk >= 0.85:
+            reasons.extend(html_reasons)
+            if p_ai >= 0.30:
+                reasons.append(f"SECONDARY_AI_CONFIDENCE(P={p_ai:.2f})")
+            return {
+                "verdict": "SPAM_BLOCKED",
+                "final_risk": html_risk,
+                "primary_module": "HTML_ANALYZER",
+                "reasons": reasons
+            }
+
+        # 2. Высокая уверенность в синтетическом тексте (FPR <= 1%)
+        if p_ai >= t_strict:
+            reasons.append(f"HIGH_AI_SYNTACTIC_CONFIDENCE(P={p_ai:.2f})")
+            if html_reasons:
+                reasons.extend(html_reasons)
+            return {
+                "verdict": "AI_GENERATED_SPAM",
+                "final_risk": round(p_ai, 2),
+                "primary_module": "TEXT_BINOCULARS_LR",
+                "reasons": reasons
+            }
+
+        # 3. Мягкая синергия Late Fusion 
+        # Если текст попал в диапазон 0.28 - 0.70 
+        # не баним письмо, а пропускаем с предупреждающим флагом:
+        if p_ai >= 0.28 and html_risk < 0.85:
+            reasons.append(f"SUSPICIOUS_AI_TEXT_STYLE(P={p_ai:.2f})")
+            return {
+                "verdict": "SUSPICIOUS_AI_TAGGED",
+                "final_risk": round(p_ai, 2),
+                "primary_module": "TEXT_BINOCULARS_LR",
+                "reasons": reasons
+            }
+
+        # 4. Письмо признано чистым (Ham)
+        return {
+            "verdict": "CLEAN",
+            "final_risk": max(html_risk, p_ai),
+            "primary_module": "PASSED_ALL_CHECKS",
+            "reasons": ["NO_CRITICAL_ANOMALIES"]
+        }
+
+    def process_email(self, eml_path: str) -> dict:
+        """Полный сквозной прогон одного .eml файла."""
+        parsed = parse_eml(eml_path)
+        raw_text = parsed.get("clean_text", "")
+        raw_html = parsed.get("raw_html", "")
+
+        # 1. HTML модуль
+        html_out = self.html_detector.predict(raw_html)
+        html_feats = html_out["features"]
+        html_risk, html_reasons = self.evaluate_html_risk(html_feats)
+
+        # 2. Text модуль
+        text_out = self.text_detector.predict(raw_text)
+
+        # 3. Late Fusion
+        decision = self.aggregate_verdict(html_risk, html_reasons, text_out)
 
         return {
-            "verdict": verdict,
-            "confidence_score": round(final_risk, 2),
-            "reason_codes": reason_codes,
-            "explainability": {
-                "detected_ai_spans": text_res.get("detected_ai_spans", []),
-                "html_evidence": html_res.get("evidence", {}),
-                "visual_evidence": visual_res.get("details", []),
-                "metrics": {
-                    "text_ai_probability": t_risk,
-                    "html_anomaly_score": h_risk,
-                    "visual_anomaly_score": v_risk,
-                    "sentence_length_variance": text_res.get("sent_len_var"),
-                    "bino_min": text_res.get("bino_min")
-                }
-            },
-            "meta": {
-                "message_id": email_data.get("id"),
-                "subject": email_data.get("subject"),
-                "attachments_count": len(attachments)
+            "file": Path(eml_path).name,
+            "subject": parsed.get("subject", ""),
+            "verdict": decision["verdict"],
+            "risk_score": decision["final_risk"],
+            "primary_module": decision["primary_module"],
+            "reasons": decision["reasons"],
+            "details": {
+                "html_risk": html_risk,
+                "text_prob": text_out["text_prob"],
+                "lang": text_out["lang"],
+                "most_ai_chunk": text_out.get("most_ai_chunk", "")[:120],
+                "hidden_css_tags": html_feats.get("hidden_elements_count", 0),
+                "dummy_links": html_feats.get("dummy_link_count", 0)
             }
         }
 
-    finally:
-        if cleanup_temp and extract_dir and os.path.exists(extract_dir):
-            try:
-                shutil.rmtree(extract_dir)
-            except Exception:
-                pass
+    def process_jsonl(self, jsonl_path: str):
+        """Пакетный прогон тестовой выборки с наглядным отчетом."""
+        with open(jsonl_path, "r", encoding="utf-8") as f:
+            lines = [json.loads(line) for line in f if line.strip()]
+
+        print(f"\nЗапуск анализа выборки из {len(lines)} писем...")
+        print("-" * 85)
+        print(f"{'Файл':<14} | {'Вердикт':<20} | {'Риск':<5} | {'Модуль':<20} | {'Причины'}")
+        print("-" * 85)
+
+        for item in lines:
+            raw_text = item.get("text", "")
+            raw_html = item.get("raw_html", "")
+            file_name = item.get("file_name", "sample")[:12]
+
+            html_out = self.html_detector.predict(raw_html)
+            html_risk, html_reasons = self.evaluate_html_risk(html_out["features"])
+
+            text_out = self.text_detector.predict(raw_text, force_lang=item.get("lang"))
+            decision = self.aggregate_verdict(html_risk, html_reasons, text_out)
+
+            reasons_str = ", ".join(decision["reasons"])
+            print(f"{file_name:<14} | {decision['verdict']:<20} | {decision['final_risk']:<5.2f} | {decision['primary_module']:<20} | {reasons_str}")
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Dr.Web Multi-Modal Spam & AI Detector")
+    parser.add_argument("--eml", type=str, help="Путь к отдельному .eml файлу")
+    parser.add_argument("--jsonl", type=str, help="Путь к тестовому .jsonl датасету")
+    args = parser.parse_args()
+
+    pipeline = SpamAiPipeline()
+
+    if args.eml:
+        res = pipeline.process_email(args.eml)
+        print(json.dumps(res, ensure_ascii=False, indent=2))
+    elif args.jsonl:
+        pipeline.process_jsonl(args.jsonl)
+    else:
+        # Демонстрационный прогон по умолчанию на сохраненном срезе
+        default_file = "drweb_13_enriched.jsonl"
+        if os.path.exists(default_file):
+            print(f"[Демо] Флаги не указаны, запуск на {default_file}...")
+            pipeline.process_jsonl(default_file)
+        else:
+            print("Укажите параметр: python pipeline.py --eml <путь> или --jsonl <путь>")
 
 
 if __name__ == "__main__":
-    if len(sys.argv) > 1:
-        res = scan_email(sys.argv[1])
-        print(json.dumps(res, ensure_ascii=False, indent=2))
-    else:
-        print("Использование: python pipeline.py <путь_к_письму.eml>")
+    main()
