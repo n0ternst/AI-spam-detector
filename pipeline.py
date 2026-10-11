@@ -23,10 +23,8 @@ class SpamAiPipeline:
         self.text_detector = TextDetector()
         print("✓ Конвейер готов к работе.\n")
 
-    def evaluate_html_risk(self, feats: dict) -> tuple[float, list[str]]:
-        """
-        Калиброванная оценка риска верстки по правилам фильтрации Dr.Web.
-        """
+    def evaluate_html_risk(self, feats: dict, desync_score: float = 0.0) -> tuple[float, list[str]]:
+        """Калиброванная оценка риска верстки по правилам фильтрации Dr.Web."""
         reasons = []
         risk = 0.0
 
@@ -45,6 +43,7 @@ class SpamAiPipeline:
             risk = max(risk, 0.92)
             reasons.append("HIDDEN_IFRAME_PAYLOAD")
 
+        # Отлов даже единичного скрытого блока (белый на белом, нулевой шрифт)
         if hidden >= 1:
             risk = max(risk, 0.90)
             reasons.append(f"CLOAKED_HIDDEN_CONTENT({hidden})")
@@ -52,6 +51,11 @@ class SpamAiPipeline:
         if hidden >= 2 and dummy >= 2:
             risk = max(risk, 0.90)
             reasons.append(f"PHISHING_LINK_MASKING(hidden={hidden}, dummy_links={dummy})")
+
+        # Раздвоение личности между Plain text и HTML
+        if desync_score >= 0.45:
+            risk = max(risk, 0.85)
+            reasons.append(f"MULTIPART_DESYNC_ATTACK(desync={desync_score})")
 
         # 2. Мягкие триггеры верстки (Soft Indicators)
         if dummy >= 3:
@@ -62,9 +66,17 @@ class SpamAiPipeline:
             risk = max(risk, 0.70)
             reasons.append(f"SUSPICIOUS_ZERO_WIDTH_PADDING({zw})")
 
-        if feats.get("modern_html5_tags_count", 0) >= 3:
+        if feats.get("modern_html5_tags_count", 0) >= 3 and feats.get("has_mso_comments", 0) == 0:
             risk = max(risk, 0.40)
             reasons.append(f"LLM_SYNTHETIC_HTML5_LAYOUT({feats['modern_html5_tags_count']})")
+
+        if feats.get("vendor_css_density", 1.0) == 0.0 and feats.get("modern_html5_tags_count", 0) > 0:
+            risk = max(risk, 0.35)
+            reasons.append("ZERO_VENDOR_CSS_ANOMALY")
+
+        if feats.get("placeholder_hits", 0) > 0:
+            risk = max(risk, 0.30)
+            reasons.append(f"UNCOMPILED_TEMPLATE_TAGS({feats['placeholder_hits']})")
 
         if feats.get("data_uri_count", 0) >= 2:
             risk = max(risk, 0.50)
@@ -73,19 +85,12 @@ class SpamAiPipeline:
         return round(risk, 2), reasons
 
     def aggregate_verdict(self, html_risk: float, html_reasons: list[str], text_res: dict) -> dict:
-        """
-        Иерархическая логика Late Fusion:
-        1. Hard Trigger верстки (фишинг/формы) -> Блокировка
-        2. Strict Trigger текста (P(AI) >= T_strict) -> AI Спам
-        3. Composite Synergy (пред-пороговые значения обоих модулей) -> Серая зона
-        4. Чистое письмо (Ham)
-        """
+        """Иерархическая логика Late Fusion."""
         reasons = []
         p_ai = text_res.get("text_prob", 0.0)
         t_strict = text_res.get("t_strict", 0.85)
-        t_soft = text_res.get("t_soft", 0.72)
 
-        # 1. Приоритет критических уязвимостей разметки
+        # 1. Приоритет критических уязвимостей разметки (фишинг, формы, скрытый камуфляж)
         if html_risk >= 0.85:
             reasons.extend(html_reasons)
             if p_ai >= 0.30:
@@ -109,9 +114,7 @@ class SpamAiPipeline:
                 "reasons": reasons
             }
 
-        # 3. Мягкая синергия Late Fusion 
-        # Если текст попал в диапазон 0.28 - 0.70 
-        # не баним письмо, а пропускаем с предупреждающим флагом:
+        # 3. Мягкая синергия Late Fusion (серая зона / гибриды)
         if p_ai >= 0.28 and html_risk < 0.85:
             reasons.append(f"SUSPICIOUS_AI_TEXT_STYLE(P={p_ai:.2f})")
             return {
@@ -134,16 +137,18 @@ class SpamAiPipeline:
         parsed = parse_eml(eml_path)
         raw_text = parsed.get("clean_text", "")
         raw_html = parsed.get("raw_html", "")
+        desync_score = parsed.get("multipart_desync_score", 0.0)
 
-        # 1. HTML модуль
-        html_out = self.html_detector.predict(raw_html)
-        html_feats = html_out["features"]
-        html_risk, html_reasons = self.evaluate_html_risk(html_feats)
-
-        # 2. Text модуль
+        # 1. Сначала запускаем текстовый модуль (получаем проценты и спаны ИИ)
         text_out = self.text_detector.predict(raw_text)
+        ai_spans = text_out.get("detected_ai_spans", [])
 
-        # 3. Late Fusion
+        # 2. Затем передаем спаны в HTML-модуль для разметки AST-дерева
+        html_out = self.html_detector.predict(raw_html, ai_spans=ai_spans)
+        html_feats = html_out["features"]
+        html_risk, html_reasons = self.evaluate_html_risk(html_feats, desync_score)
+
+        # 3. Принятие итогового решения
         decision = self.aggregate_verdict(html_risk, html_reasons, text_out)
 
         return {
@@ -159,7 +164,9 @@ class SpamAiPipeline:
                 "lang": text_out["lang"],
                 "most_ai_chunk": text_out.get("most_ai_chunk", "")[:120],
                 "hidden_css_tags": html_feats.get("hidden_elements_count", 0),
-                "dummy_links": html_feats.get("dummy_link_count", 0)
+                "dummy_links": html_feats.get("dummy_link_count", 0),
+                "desync_score": desync_score,
+                "ast_tree": html_out["ast_tree"].to_dict() if html_out.get("ast_tree") else None
             }
         }
 
@@ -178,14 +185,24 @@ class SpamAiPipeline:
             raw_html = item.get("raw_html", "")
             file_name = item.get("file_name", "sample")[:12]
 
-            html_out = self.html_detector.predict(raw_html)
+            text_out = self.text_detector.predict(raw_text, force_lang=item.get("lang"))
+            html_out = self.html_detector.predict(raw_html, ai_spans=text_out.get("detected_ai_spans", []))
             html_risk, html_reasons = self.evaluate_html_risk(html_out["features"])
 
-            text_out = self.text_detector.predict(raw_text, force_lang=item.get("lang"))
             decision = self.aggregate_verdict(html_risk, html_reasons, text_out)
 
             reasons_str = ", ".join(decision["reasons"])
             print(f"{file_name:<14} | {decision['verdict']:<20} | {decision['final_risk']:<5.2f} | {decision['primary_module']:<20} | {reasons_str}")
+
+
+# Адаптер вызова для Colab и внешних скриптов
+_pipeline_instance = None
+
+def scan_email(eml_path: str) -> dict:
+    global _pipeline_instance
+    if _pipeline_instance is None:
+        _pipeline_instance = SpamAiPipeline()
+    return _pipeline_instance.process_email(eml_path)
 
 
 def main():
@@ -202,7 +219,6 @@ def main():
     elif args.jsonl:
         pipeline.process_jsonl(args.jsonl)
     else:
-        # Демонстрационный прогон по умолчанию на сохраненном срезе
         default_file = "drweb_13_enriched.jsonl"
         if os.path.exists(default_file):
             print(f"[Демо] Флаги не указаны, запуск на {default_file}...")
