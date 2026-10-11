@@ -45,9 +45,9 @@ class SpamAiPipeline:
             risk = max(risk, 0.92)
             reasons.append("HIDDEN_IFRAME_PAYLOAD")
 
-        if hidden >= 4:
-            risk = max(risk, 0.88)
-            reasons.append(f"MASSIVE_HIDDEN_CSS({hidden})")
+        if hidden >= 1:
+            risk = max(risk, 0.90)
+            reasons.append(f"CLOAKED_HIDDEN_CONTENT({hidden})")
 
         if hidden >= 2 and dummy >= 2:
             risk = max(risk, 0.90)
