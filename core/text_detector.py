@@ -9,19 +9,25 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# Коэффициенты логистической регрессии (8 признаков)
+# Финальные зафиксированные веса (8 признаков, окно 120/30)
 CONFIG = {
     "ru": {
-        "weights": np.array([4.46094, -11.41842, 8.33193, -0.00539, -0.00318, -3.62979, 0.34151, 0.02739], dtype=np.float64),
-        "bias": 5.09906,
-        "t_strict": 0.8472,
-        "t_soft": 0.7236
+        "weights": np.array([
+            12.54760, -19.45794, 94.53831, -0.00617,
+            -0.00347, -3.46861, 0.41326, 0.01772
+        ], dtype=np.float64),
+        "bias": 3.62764,
+        "t_strict": 0.8501,
+        "t_soft": 0.6605
     },
     "eng": {
-        "weights": np.array([4.41917, -3.59224, 7.92443, -0.03285, -0.00617, -3.05382, 0.22090, 0.33094], dtype=np.float64),
-        "bias": -3.36463,
-        "t_strict": 0.8730,
-        "t_soft": 0.7628
+        "weights": np.array([
+            13.71354, -15.00183, 137.82553, -0.03127,
+            -0.00613, -2.99892, 0.25012, 0.33329
+        ], dtype=np.float64),
+        "bias": -1.59887,
+        "t_strict": 0.8806,
+        "t_soft": 0.6687
     }
 }
 
@@ -37,22 +43,13 @@ def clean_text_for_scoring(text: str) -> str:
     if not text:
         return ""
 
-    # 1. Замена URL и веб-адресов
     text = re.sub(r'https?://\S+|www\.\S+', ' [ссылка] ', text)
-
-    # 2. Маскирование номеров телефонов (RU/международные)
     phone_pattern = r'(\+?\d{1,3}[\s\-]?)?(\(?\d{2,4}\)?[\s\-]?)?\d{3}[\s\-]?\d{2}[\s\-]?\d{2}'
     text = re.sub(phone_pattern, ' [телефон] ', text)
-
-    # 3. Вырезание остатков CSS, MSO и шрифтовых директив
     text = re.sub(r'@import\s+url\([^)]*\);?', ' ', text)
     text = re.sub(r'@[a-zA-Z\-]+\s*\{[^}]*\}', ' ', text)
     text = re.sub(r'(\b(color|background|font|margin|padding|border|width|display|mso-[a-z\-]+)\s*:[^;]+;)+', ' ', text, flags=re.I)
-
-    # 4. Удаление шаблонных тегов Jinja / ESP
     text = re.sub(r'\{\{[^}]+\}\}|\{%\s*[^%]+\s*%\}|\[[A-Z_]{3,20}\]', ' ', text)
-
-    # 5. Схлопывание пробелов и неразрывных пробелов
     text = text.replace('\xa0', ' ')
     return " ".join(text.split()).strip()
 
@@ -99,8 +96,8 @@ def extract_robust_word_features(text: str) -> tuple[float, float]:
 class TextDetector:
     def __init__(
         self,
-        observer_name: str = "Qwen/Qwen2.5-3B",
-        performer_name: str = "Qwen/Qwen2.5-3B-Instruct",
+        observer_name: str = "Qwen/Qwen2.5-0.5B",
+        performer_name: str = "Qwen/Qwen2.5-0.5B-Instruct",
         device: torch.device = DEVICE
     ):
         self.device = device
@@ -110,7 +107,13 @@ class TextDetector:
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
 
-        dtype = torch.float16 if self.device.type == "cuda" else torch.float32
+        # Использование bfloat16
+        if self.device.type == "cuda" and torch.cuda.is_bf16_supported():
+            dtype = torch.bfloat16
+        elif self.device.type == "cuda":
+            dtype = torch.float16
+        else:
+            dtype = torch.float32
 
         self.observer = AutoModelForCausalLM.from_pretrained(
             observer_name, torch_dtype=dtype, low_cpu_mem_usage=True
@@ -127,7 +130,7 @@ class TextDetector:
         gc.collect()
         if self.device.type == "cuda":
             torch.cuda.empty_cache()
-        print("[TextDetector] ✓ Модели инициализированы.")
+        print("[TextDetector] ✓ Модели 0.5B инициализированы.")
 
     @torch.inference_mode()
     def _score_tokens(self, input_ids: torch.Tensor) -> float:
@@ -154,7 +157,7 @@ class TextDetector:
         return float(log_ppl / log_x_ppl if log_x_ppl != 0 else 1.0)
 
     @torch.inference_mode()
-    def compute_bino_features(self, clean_text: str, window_size: int = 50, step: int = 15, max_tokens: int = 1024) -> dict:
+    def compute_bino_features(self, clean_text: str, window_size: int = 120, step: int = 30, max_tokens: int = 1024) -> dict:
         if not clean_text or len(clean_text) < 10:
             return {"bino_min": 1.0, "bino_mean": 1.0, "bino_var": 0.0, "most_ai_chunk": ""}
 
@@ -200,7 +203,6 @@ class TextDetector:
         clean_text = clean_text_for_scoring(raw_text)
         words = clean_text.split()
 
-        # на очень коротких текстах стилометрия не информативна
         if len(words) < 20:
             return {
                 "text_prob": 0.0,
@@ -214,8 +216,8 @@ class TextDetector:
         lang = force_lang or detect_language(clean_text)
         cfg = CONFIG.get(lang, CONFIG["ru"])
 
-        # 1. Binoculars
-        bino_res = self.compute_bino_features(clean_text)
+        # 1. Binoculars (окно 120, шаг 30)
+        bino_res = self.compute_bino_features(clean_text, window_size=120, step=30)
 
         # 2. Синтаксис предложений
         avg_len, len_var, short_ratio = extract_sentence_stats(clean_text)
@@ -262,8 +264,6 @@ class TextDetector:
             item["text_prob"] = res["text_prob"]
             item["most_ai_chunk"] = res["most_ai_chunk"]
             results.append(item)
-            if self.device.type == "cuda":
-                torch.cuda.empty_cache()
 
         out_df = pd.DataFrame(results)
         out_df.to_json(output_jsonl, orient="records", lines=True, force_ascii=False)
