@@ -1,3 +1,17 @@
+"""
+HTML Layout Forensics & Semantic AST Detector.
+
+This module conducts structural, semantic, and adversarial cloaking analysis
+on raw email HTML markup. 
+
+Key capabilities:
+- WCAG 2.1 relative luminance contrast cloaking detection (e.g., white-on-white text).
+- ReDoS-resistant linear CSS parser for safe style extraction.
+- ChatGPT Web-UI paste scars detection (Söhne font, specific RGBA backgrounds).
+- Semantic Abstract Syntax Tree (AST) construction with non-binary AI confidence mapping.
+- ML-driven layout evaluation via HistGradientBoosting (Zero Data Leakage).
+"""
+
 import os
 import re
 import json
@@ -36,9 +50,14 @@ HIDDEN_CSS_PATTERNS = [
     re.compile(r"font-size\s*:\s*0(px|pt|em|rem)?(?![0-9])", re.IGNORECASE),
     re.compile(r"text-indent\s*:\s*-[0-9]{3,5}px", re.IGNORECASE),
     re.compile(r"left\s*:\s*-[0-9]{3,5}px", re.IGNORECASE),
+    re.compile(r"height\s*:\s*0(px)?;.*overflow\s*:\s*hidden", re.IGNORECASE),
     re.compile(r"transform\s*:\s*scale\s*\(\s*0?(\.0+)?(?![1-9])\s*\)", re.IGNORECASE),
     re.compile(r"zoom\s*:\s*0?(\.0+)?(?![1-9])\d*", re.IGNORECASE),
 ]
+
+# Следы копипасты из веб-интерфейсов LLM (ChatGPT, Claude)
+LLM_COPYPASTE_FONTS = re.compile(r"(Söhne|ui-sans-serif|Signifier|Proxima Nova)", re.IGNORECASE)
+LLM_COPYPASTE_BG = re.compile(r"rgb\(\s*247\s*,\s*247\s*,\s*248\s*\)", re.IGNORECASE)
 
 VENDOR_CSS_RE = re.compile(r"-(?:ms|webkit|moz)-|mso-", re.IGNORECASE)
 ZERO_WIDTH_REGEX = re.compile(r"[\u200B\u200C\u200D\uFEFF\u00AD]")
@@ -80,7 +99,7 @@ def calculate_contrast_ratio(rgb1: tuple[int, int, int], rgb2: tuple[int, int, i
 
 
 def strip_media_queries_linear(css: str) -> str:
-    """Линейный O(N) алгоритм удаления @media без зависаний."""
+    """Безопасный линейный O(N) алгоритм парсинга CSS без риска ReDoS."""
     if "@media" not in css.lower():
         return css
     res, i, n = [], 0, len(css)
@@ -100,7 +119,7 @@ def strip_media_queries_linear(css: str) -> str:
 
 
 class SemanticASTNode:
-    """Узел семантического AST-дерева с небинарной вероятностью ИИ."""
+    """Узел семантического дерева с атрибуцией вероятности ИИ-генерации."""
     def __init__(self, tag_name: str, role: str, text: str = "", is_hidden: bool = False,
                  hidden_reason: str | None = None, ai_confidence: float = 0.0, contrast_ratio: float | None = None):
         self.tag_name = tag_name
@@ -136,10 +155,9 @@ class HTMLDetector:
                 self.model = bundle["model"]
                 self.feature_names = bundle["feature_names"]
             except Exception as e:
-                print(f"[HTMLDetector] Ошибка загрузки весов: {e}")
+                print(f"[HTMLDetector] Ошибка загрузки ML модели: {e}")
 
     def _extract_css_context(self, soup: BeautifulSoup) -> tuple[dict[str, str], float]:
-        """Извлечение классов и расчет плотности вендорных CSS-свойств (Rspamd style)."""
         class_rules = {}
         total_props = 0
         vendor_props = 0
@@ -192,7 +210,6 @@ class HTMLDetector:
         return False, None, effective_bg, None
 
     def extract_features(self, html: str, ai_spans: list[dict] | None = None) -> tuple[dict, SemanticASTNode, dict]:
-        """Единый проход: расчет нормализованных признаков без читерства."""
         if not html or not html.strip():
             return self._empty_features(), SemanticASTNode("root", "EMPTY"), {"cloaked_snippets": []}
 
@@ -218,6 +235,21 @@ class HTMLDetector:
         forms = soup.find_all("form")
         iframes = soup.find_all("iframe")
 
+        # Новые анти-ИИ фичи: Следы копипасты из браузера и маркированные списки
+        chatgpt_copypaste_hits = 0
+        inline_styles = 0
+        class_attrs = 0
+        for tag in all_tags:
+            st = str(tag.get("style", ""))
+            if st:
+                inline_styles += 1
+                if LLM_COPYPASTE_FONTS.search(st) or LLM_COPYPASTE_BG.search(st):
+                    chatgpt_copypaste_hits += 1
+            if tag.get("class"):
+                class_attrs += 1
+
+        bold_li_hits = sum(1 for li in soup.find_all("li") if li.find(["strong", "b"]))
+
         tracking_pixels = sum(1 for img in images if str(img.get("width", "")) in ("0", "1") or "track" in str(img.get("src", "")).lower())
         dummy_links = sum(1 for a in links if str(a.get("href", "")).strip() in ("", "#", "javascript:void(0)") or "example.com" in str(a.get("href", "")).lower())
         list_unsubscribe_link = any("unsubscribe" in str(a.get("href", "")).lower() or "отписаться" in a.get_text().lower() for a in links)
@@ -227,9 +259,6 @@ class HTMLDetector:
         modern_tag_hits = sum(1 for tag in all_tags if tag.name.lower() in MODERN_HTML5_TAGS)
         doctype_present = int(html.strip().lower().startswith("<!doctype"))
         zero_width_hits = len(ZERO_WIDTH_REGEX.findall(html))
-
-        inline_styles = len(soup.find_all(attrs={"style": True}))
-        class_attrs = len(soup.find_all(attrs={"class": True}))
 
         hidden_elements_count = 0
         cloaked_snippets = []
@@ -322,7 +351,9 @@ class HTMLDetector:
             "has_iframes": int(len(iframes) > 0),
             "image_count": len(images),
             "link_count": len(links),
-            "inline_style_to_class_ratio": round(inline_styles / max(class_attrs, 1), 4)
+            "inline_style_to_class_ratio": round(inline_styles / max(class_attrs, 1), 4),
+            "chatgpt_copypaste_hits": chatgpt_copypaste_hits,
+            "bold_list_anomalies": bold_li_hits
         }
 
         evidence = {
@@ -341,7 +372,7 @@ class HTMLDetector:
             "modern_html5_tags_count", "placeholder_hits", "markdown_leftover_hits",
             "hidden_elements_count", "zero_width_chars_count", "tracking_pixel_count",
             "dummy_link_count", "has_forms", "has_iframes", "image_count", "link_count",
-            "inline_style_to_class_ratio"
+            "inline_style_to_class_ratio", "chatgpt_copypaste_hits", "bold_list_anomalies"
         ]
         return {k: 0 for k in keys}
 
@@ -349,7 +380,9 @@ class HTMLDetector:
         feats, ast_tree, evidence = self.extract_features(html, ai_spans=ai_spans)
         
         if self.model is not None and self.feature_names is not None:
-            X = pd.DataFrame([feats])
+            # Исключаем сырые текстовые и языковые маркеры из инференса ML, чтобы модель смотрела только на структуру
+            clean_feats = {k: v for k, v in feats.items() if k not in ["lang", "label"]}
+            X = pd.DataFrame([clean_feats])
             for col in self.feature_names:
                 if col not in X.columns: X[col] = 0
             X = X[self.feature_names]
@@ -360,7 +393,8 @@ class HTMLDetector:
             if feats["hidden_elements_count"] >= 1: risk += 0.90
             if feats["placeholder_hits"] > 0: risk += 0.35
             if feats["modern_html5_tags_count"] >= 2 and feats["has_mso_comments"] == 0: risk += 0.30
-            if feats["vendor_css_density"] == 0.0 and feats["modern_html5_tags_count"] > 0: risk += 0.20
+            if feats["chatgpt_copypaste_hits"] > 0: risk += 0.40
+            if feats["bold_list_anomalies"] >= 2: risk += 0.20
             if feats["has_unsubscribe_link"] and feats["has_table_layout"]: risk = max(0.0, risk - 0.25)
             proba = min(1.0, round(risk, 4))
 
@@ -382,4 +416,42 @@ class HTMLDetector:
             results.append(item)
         out_df = pd.DataFrame(results)
         out_df.to_json(output_jsonl, orient="records", lines=True, force_ascii=False)
-        print(f"[HTMLDetector] Размечено {len(out_df)} строк в {output_jsonl}")
+        print(f"[HTMLDetector] Обогащено {len(out_df)} строк -> {output_jsonl}")
+
+
+# Обучение модели вынесено из базового класса
+def train_html_model(human_dataset_path: str, ai_dataset_path: str, model_out: str = "models/html_ai_detector.joblib"):
+    def load_records(path: str, default_label: int) -> pd.DataFrame:
+        rows = [json.loads(line) for line in open(path, "r", encoding="utf-8") if line.strip()]
+        df = pd.DataFrame(rows)
+        if "label" not in df.columns: df["label"] = default_label
+        return df[["html", "label"]]
+
+    print("Загрузка датасетов...")
+    combined = pd.concat([load_records(human_dataset_path, 0), load_records(ai_dataset_path, 1)], ignore_index=True)
+
+    det = HTMLDetector()
+    feature_rows = [det.extract_features(h)[0] for h in combined["html"].fillna("")]
+    df_features = pd.DataFrame(feature_rows)
+
+    # Исключаем lang из обучения (защита от Data Leakage)
+    X = df_features.drop(columns=["label", "lang"], errors="ignore")
+    y = df_features["label"]
+
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
+
+    model = HistGradientBoostingClassifier(max_depth=6, learning_rate=0.05, max_iter=350, random_state=42)
+    model.fit(X_train, y_train)
+
+    print(f"ROC-AUC: {roc_auc_score(y_test, model.predict_proba(X_test)[:, 1]):.4f}")
+
+    os.makedirs(os.path.dirname(model_out) or ".", exist_ok=True)
+    joblib.dump({"model": model, "feature_names": list(X.columns)}, model_out)
+    print(f"Модель сохранена в: {model_out}")
+
+
+if __name__ == "__main__":
+    if os.path.exists("human_html_dataset.jsonl") and os.path.exists("ai_html_dataset.jsonl"):
+        train_html_model("human_html_dataset.jsonl", "ai_html_dataset.jsonl")
+    else:
+        print("Датасеты не найдены. Готов к инференсу.")
