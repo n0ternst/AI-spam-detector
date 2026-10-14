@@ -1,5 +1,5 @@
 """
-HTML Layout Forensics & Semantic AST Detector (Enterprise Edition).
+HTML Layout Forensics & Semantic AST Detector
 """
 
 from concurrent.futures import ProcessPoolExecutor
