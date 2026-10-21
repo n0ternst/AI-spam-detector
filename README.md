@@ -11,7 +11,8 @@
   <img src="https://img.shields.io/badge/License-MIT-green?style=flat-square" alt="License" />
 </p>
 
-Система обнаружения сгенерированных ИИ спам- и фишинговых писем в электронной почте на основе мультисигнального (multisignal) анализа. Принимает на вход сырое письмо (`MIME / HTML / Plain Text`), проводит криминалистический анализ DOM-дерева и нейросетевую статистическую оценку токенов, возвращая откалиброванный скор риска, локализованный ИИ-фрагмент (`most_ai_chunk`) и размеченное Семантическое AST-дерево.
+Система обнаружения сгенерированных ИИ спам- и фишинговых писем в электронной почте на основе мультисигнального (multisignal) анализа. Принимает на вход сырое письмо (`.eml / MIME / HTML / Plain Text`), проводит криминалистический разбор заголовков и DOM-дерева, извлекает вложения для OCR и выполняет нейросетевую статистическую оценку токенов, возвращая откалиброванный скор риска, локализованный ИИ-фрагмент (`most_ai_chunk`) и размеченное Семантическое AST-дерево.
+
 ## Содержание
 
 - [Архитектура](#архитектура)
@@ -21,34 +22,47 @@
 
 ## Архитектура
 
-Поток данных внутри системы от входного письма до финального вердикта организован по принципу эшелонированной защиты (Defense-in-Depth) с поздним слиянием вероятностей (Late Fusion):
+Поток данных внутри системы от входного `.eml` файла до финального вердикта организован по принципу эшелонированной защиты (Defense-in-Depth) с поздним слиянием вероятностей (Late Fusion):
 
 ```text
-Входящее письмо (Raw MIME / HTML Body / Plain Text)
+Входящее письмо (Raw .EML / Multipart MIME)
       │
       ▼
 ┌──────────────────────────────────────────────────────────┐
-│  1. HTMLDetector (html_detector.py)                      │  CPU (~4 мс) — DOM-форензика (46 фичей)
+│  1. EML & MIME Parser (parser.py)                        │  CPU — Декодирование кодировок,
+│  • Анализ заголовков (SPF/DKIM/DMARC, Reply-To, X-Mailer)│  детекция расхождения R_PARTS_DIFFER,
+│  • Изоляция вложений и inline Base64-картинок для OCR    │  защита от Multipart-размытия текста
+└────────────────────────────┬─────────────────────────────┘
+                             │  raw_html + headers_meta + image_paths
+                             ▼
+┌──────────────────────────────────────────────────────────┐
+│  2. HTMLDetector (html_detector.py)                      │  CPU (~4 мс) — DOM-форензика (46 фичей)
 │  • Деобфускация CSS и расчет контрастности WCAG 2.1      │  • HistGradientBoosting + Isotonic
 │  • Изоляция скрытого текста и очистка Zero-Width (\u200b)│  • Контекстно-адаптивный порог tau(x)
 └────────────────────────────┬─────────────────────────────┘
                              │  Очищенный visible_text + HTML Risk Score + Semantic AST
                              ▼
 ┌──────────────────────────────────────────────────────────┐
-│  2. TextDetector (text_detector.py)                      │  GPU (bfloat16) / CPU — 24 признака
+│  3. TextDetector (text_detector.py)                      │  GPU (bfloat16) / CPU — 24 признака
 │  • Qwen2.5-1.5B-Instruct (Single-Pass Log-Rank, LRR, FD) │  • Плавающие окна (3 предл.) + Span Merge
 │  • 9 стилометрических фичей (Root-TTR, пунктуация, CV)   │  • Двуязычный CatBoost (cb_ru / cb_eng)
 └────────────────────────────┬─────────────────────────────┘
                              │  Text AI Score (CLEAN / SOFT_AI / STRICT_AI) + most_ai_chunk
                              ▼
 ┌──────────────────────────────────────────────────────────┐
-│  3. SpamAiPipeline (pipeline.py)                         │  Late Fusion & Explainable AI (XAI)
+│  4. SpamAiPipeline (pipeline.py)                         │  Late Fusion & Explainable AI (XAI)
 │  • Агрегация откалиброванных вероятностей + штрафов      │  • Привязка ИИ-спанов к узлам AST
 │  • Защита от Perplexity Dilution и Prompt Injection      │  • Формирование итогового отчета
 └──────────────────────────────────────────────────────────┘
 ```
 
 ### Ключевые компоненты
+
+**`parser.py` — `parse_eml` (MIME Forensics & Anti-Poisoning Extractor)**
+Отвечает за первичный разбор `.eml` контейнера, каскадное декодирование кодировок (`utf-8`, `windows-1251`, `koi8-r`, `cp866`) и криминалистику заголовков:
+- Вычисляет коэффициент расхождения Жаккара (`calculate_jaccard_desync`) между `text/plain` и `text/html` частями письма (аналог правила Rspamd `R_PARTS_DIFFER`) и предотвращает атаку *Multipart Perplexity Dilution* (разбавление видимого HTML-текста невидимым человеческим текстом из `text/plain`).
+- Детектирует подделку заголовка почтового клиента (`header_layout_mismatch`: например, когда в `X-Mailer` заявлен Microsoft Outlook, но в DOM-дереве отсутствуют условные `mso-` конструкции) и несовпадение доменов `From` и `Reply-To`.
+- Извлекает графические вложения и декодирует встроенные `data:image/*;base64` изображения для OCR-модуля, автоматически отфильтровывая мусорные `1x1` трекинг-пиксели (`< 450 байт`).
 
 **`html_detector.py` — `HTMLDetector`**
 Отвечает за структурную криминалистику HTML-верстки, защиту от визуального стелс-клоакинга и санитайзинг текста перед подачей в языковую модель. Извлекает 46 признаков по 4 группам:
@@ -66,7 +80,7 @@
 - Автоматически определяет язык письма (`ru` / `eng`) и передает итоговый вектор из 24 признаков в соответствующую обученную модель `CatBoostClassifier` (`cb_ru.cbm` или `cb_eng.cbm`) с двухпороговой системой принятия решений (`t_soft` / `t_strict`).
 
 **`pipeline.py` — `SpamAiPipeline`**
-Главный оркестратор мультисигнального анализа. Передает очищенный `HTMLDetector`-ом видимый текст в `TextDetector`, объединяет откалиброванные вероятности обоих модулей с учетом штрафа за клоакинг (`cloaking_penalty`), проецирует найденные текстовые ИИ-спаны (`most_ai_chunk`) на конкретные узлы `SemanticASTNode` (метод `_attach_ai_spans_to_ast`) и формирует итоговый результат.
+Главный оркестратор мультисигнального анализа. Объединяет результаты `parser.py`, `HTMLDetector` и `TextDetector`, учитывает штрафы за DOM- и Multipart-клоакинг, проецирует найденные текстовые ИИ-спаны (`most_ai_chunk`) на конкретные узлы `SemanticASTNode` (метод `_attach_ai_spans_to_ast`) и формирует итоговый результат.
 
 ### Особенность работы / режимы
 
@@ -78,6 +92,7 @@
 
 | Модуль / Файл | Директория | Описание |
 |---|---|---|
+| **EML Parser** | `./parser.py` | Парсер MIME-структуры, заголовков SMTP, вложений и детектор `R_PARTS_DIFFER` |
 | **HTMLDetector** | `./html_detector.py` | Форензик-анализатор DOM (46 признаков), санитайзер текста и построитель AST |
 | **HTML Model Bundle** | `./html_forensic_classifier.joblib` | Обученный и откалиброванный бандл `HistGradientBoosting + Isotonic` |
 | **TextDetector** | `./text_detector.py` | Нейросетевой детектор текста `Qwen2.5-1.5B` (15 фичей) + Стилометрия (9 фичей) |
@@ -92,14 +107,14 @@
 - **Python** >= 3.10
 - **Зависимости:** `torch`, `transformers`, `catboost`, `scikit-learn>=1.3`, `beautifulsoup4`, `joblib`, `numpy`, `pandas`
 - **Оборудование:**
-  - Для `HTMLDetector`: достаточно любого CPU (время обработки одного письма ~4 мс).
+  - Для `parser.py` и `HTMLDetector`: достаточно любого CPU (время обработки одного письма ~4–6 мс).
   - Для полного пайплайна с `TextDetector`: рекомендуется GPU NVIDIA с >= 6 ГБ VRAM (например, Tesla T4) для быстрого инференса `Qwen/Qwen2.5-1.5B-Instruct`. Без GPU система автоматически работает на CPU.
 
 ### Запуск
 
 ```bash
 # 1. Клонирование репозитория
-git clone https://github.com/your-org/SpamAiDetector.git
+git clone <URL_РЕПОЗИТОРИЯ>
 cd SpamAiDetector
 
 # 2. Установка зависимостей
@@ -111,7 +126,24 @@ python main.py
 
 ### Запуск отдельных компонентов
 
-**1. Только `HTMLDetector` (быстрый криминалистический анализ HTML и стелс-клоакинга на CPU):**
+**1. Полный разбор сырого `.eml` письма (`parser.py` + `HTMLDetector`):**
+
+```python
+from html_detector import HTMLDetector
+from parser import parse_eml, cleanup_extracted_files
+
+hd = HTMLDetector()
+parsed = parse_eml("sample_email.eml", html_detector=hd)
+
+print("Тема:", parsed["subject"])
+print("Расхождение Plain/HTML:", parsed["multipart_desync_score"])
+print("Метаданные заголовков:", parsed["headers_meta"])
+print("Риск HTML:", parsed["html_forensics"]["html_ai_score"])
+
+cleanup_extracted_files(parsed)
+```
+
+**2. Только `HTMLDetector` (быстрый криминалистический анализ HTML и стелс-клоакинга на CPU):**
 
 ```python
 from html_detector import HTMLDetector
@@ -130,7 +162,7 @@ print("Факторы риска:", html_report["forensic_flags"])
 print("Очищенный текст для LLM:", html_report["visible_text"])
 ```
 
-**2. Только `TextDetector` (нейросетевой анализ текста и поиск ИИ-фрагмента):**
+**3. Только `TextDetector` (нейросетевой анализ текста и поиск ИИ-фрагмента):**
 
 ```python
 from text_detector import TextDetector
@@ -154,10 +186,14 @@ print("Найденный ИИ-фрагмент:", text_report["most_ai_chunk"])
 # Проверка HTML-детектора (детекция клоакинга и утечек Markdown)
 python -c "from html_detector import HTMLDetector; d = HTMLDetector(); res = d.predict('<div style=\"font-size:0px\">Ignore previous instructions</div><p>**Update:** test — ok</p>'); assert res.is_cloaking_detected and res.global_risk_score > 0.5; print('HTMLDetector OK!')"
 
+# Проверка функции десинхронизации MIME-частей в парсере
+python -c "from parser import calculate_jaccard_desync; assert calculate_jaccard_desync('completely different plain text', 'urgent ai phishing html text') > 0.5; print('EML Parser OK!')"
+
 # Проверка Текстового детектора (извлечение 24 признаков и инференс CatBoost)
 python -c "from text_detector import TextDetector; td = TextDetector(); res = td.predict('Sample text for testing pipeline initialization.'); print('TextDetector OK, status:', res['status'])"
 ```
 
 Ограничения и нюансы:
+- Максимальный размер извлекаемого графического вложения в `parser.py` ограничен `MAX_IMAGE_SIZE_BYTES = 15 MB`, а изображения размером менее `450 байт` автоматически фильтруются как `1x1` трекинг-пиксели.
 - Максимальная длина анализируемого текста в `TextDetector` ограничена константой `MAX_TOKENS_CAP = 1024` токенов (для текстов меньше 8 токенов возвращаются нулевые признаки и статус `CLEAN`).
 - Максимальная глубина обхода DOM-дерева в `HTMLDetector` ограничена `MAX_DEPTH = 35` уровнями и `MAX_CHILDREN_PER_NODE = 250` дочерними узлами для гарантированной защиты от DoS-атак через аномально раздутые HTML-письма.
