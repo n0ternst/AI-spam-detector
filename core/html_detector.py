@@ -1,968 +1,631 @@
-"""
-HTML Layout Forensics & Semantic AST Detector
-"""
-
-from concurrent.futures import ProcessPoolExecutor
-from dataclasses import dataclass
-import json
-import logging
 import os
 import re
-from typing import Any
-
-from bs4 import BeautifulSoup, Comment, Tag
+import html
+import math
 import joblib
 import numpy as np
-import pandas as pd
-from sklearn.calibration import CalibratedClassifierCV
-from sklearn.ensemble import HistGradientBoostingClassifier
-from sklearn.metrics import classification_report, roc_auc_score
-from sklearn.model_selection import train_test_split
-
-logger = logging.getLogger("HTMLForensicsDetector")
-if not logger.handlers:
-    handler = logging.StreamHandler()
-    formatter = logging.Formatter(
-        "[%(asctime)s] [%(levelname)s] %(name)s: %(message)s"
-    )
-    handler.setFormatter(formatter)
-    logger.addHandler(handler)
-    logger.setLevel(logging.INFO)
-
-HEX_COLOR_RE = re.compile(r"#([0-9a-fA-F]{3,6})\b")
-RGBA_COLOR_RE = re.compile(
-    r"rgba?\s*\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)(?:\s*,\s*([0-9.]+))?\s*\)"
-)
-
-NAMED_COLORS = {
-    "white": (255, 255, 255),
-    "black": (0, 0, 0),
-    "gray": (128, 128, 128),
-    "grey": (128, 128, 128),
-    "red": (255, 0, 0),
-    "blue": (0, 0, 255),
-    "green": (0, 128, 0),
-    "transparent": None,
-}
-
-PLACEHOLDER_REGEX = [
-    re.compile(r"\[[A-Za-zА-Яа-яЁё0-9 _/-]{2,35}\]"),
-    re.compile(r"\{\{[a-zA-Z0-9_.-]+\}\}"),
-    re.compile(r"\{%[^%]+%\}"),
-]
-
-MARKDOWN_REGEX = [
-    re.compile(r"\*\*[^*]+\*\*"),
-    re.compile(r"(?<!\w)#{1,3}\s+\S"),
-    re.compile(r"(?m)^\s*[-*]\s+\S"),
-]
-
-HIDDEN_CSS_PATTERNS = [
-    re.compile(r"display\s*:\s*none", re.IGNORECASE),
-    re.compile(r"visibility\s*:\s*hidden", re.IGNORECASE),
-    re.compile(r"opacity\s*:\s*0(\.0+)?(?![0-9])", re.IGNORECASE),
-    re.compile(r"font-size\s*:\s*0(px|pt|em|rem|%)?(?![0-9])", re.IGNORECASE),
-    re.compile(r"text-indent\s*:\s*-[0-9]{3,6}px", re.IGNORECASE),
-    re.compile(r"(?:left|top)\s*:\s*-[0-9]{3,6}px", re.IGNORECASE),
-    re.compile(
-        r"(?:height|max-height)\s*:\s*0(px)?;.*overflow\s*:\s*hidden",
-        re.IGNORECASE,
-    ),
-    re.compile(
-        r"transform\s*:\s*scale\s*\(\s*0?(\.0+)?(?![1-9])\s*\)", re.IGNORECASE
-    ),
-    re.compile(r"zoom\s*:\s*0?(\.0+)?(?![1-9])\d*", re.IGNORECASE),
-    re.compile(r"clip\s*:\s*rect\(\s*0", re.IGNORECASE),
-    re.compile(r"clip-path\s*:\s*inset\(\s*(?:50|100)%", re.IGNORECASE),
-]
-
-LLM_COPYPASTE_FONTS = re.compile(
-    r"(Söhne|ui-sans-serif|Signifier|Proxima Nova|Tiempos)", re.IGNORECASE
-)
-LLM_COPYPASTE_BG = re.compile(
-    r"rgb\(\s*24[5-9]\s*,\s*24[5-9]\s*,\s*24[6-9]\s*\)", re.IGNORECASE
-)
-TAILWIND_VARS_RE = re.compile(
-    r"--tw-(?:border-spacing|translate|rotate|skew|scale|ring|shadow)",
-    re.IGNORECASE,
-)
-GDOCS_GUID_RE = re.compile(r"docs-internal-guid-[0-9a-f-]+", re.IGNORECASE)
-
-AI_BOILERPLATE_CSS_RE = re.compile(
-    r"font-family\s*:\s*['\"]?Arial['\"]?,\s*sans-serif.*?(?:line-height\s*:\s*1\.[56]|color\s*:\s*#333(?:333)?)",
-    re.IGNORECASE | re.DOTALL,
-)
-AI_ALT_PLACEHOLDERS_RE = re.compile(
-    r"^(?:company\s+logo|logo|hero\s+image|product\s+image|banner|image\s+placeholder|icon)$",
-    re.IGNORECASE,
-)
-
-BIDI_SPOOFING_RE = re.compile(
-    r"unicode-bidi\s*:\s*bidi-override|direction\s*:\s*rtl", re.IGNORECASE
-)
-BIDI_CONTROL_CHARS_RE = re.compile(r"[\u202A-\u202E\u2066-\u2069]")
-
-VENDOR_CSS_RE = re.compile(r"-(?:ms|webkit|moz)-|mso-", re.IGNORECASE)
-ZERO_WIDTH_REGEX = re.compile(r"[\u200B\u200C\u200D\uFEFF\u00AD]")
-ESP_CLASS_HINTS = (
-    "mcntextcontent",
-    "mcnbutton",
-    "mj-",
-    "sg-",
-    "hubspot",
-    "mailchimp",
-    "klaviyo",
-)
-MODERN_HTML5_TAGS = {
-    "section",
-    "article",
-    "header",
-    "footer",
-    "nav",
-    "main",
-    "aside",
-}
-
-MAX_CHILDREN_PER_NODE = 35
-MAX_DOM_TRAVERSAL_DEPTH = 15
+from urllib.parse import unquote
+from collections import Counter
+from dataclasses import dataclass, field
+from typing import Any
+from bs4 import BeautifulSoup, Comment, Tag
 
 
-def parse_color_to_rgb(color_str: str) -> tuple[int, int, int] | None:
-    if not color_str:
-        return None
-    c = color_str.strip().lower()
-    if c in NAMED_COLORS:
-        return NAMED_COLORS[c]
-
-    rgb_m = RGBA_COLOR_RE.search(c)
-    if rgb_m:
-        try:
-            if rgb_m.group(4) is not None and float(rgb_m.group(4)) < 0.12:
-                return None
-            r = min(255, max(0, int(rgb_m.group(1))))
-            g = min(255, max(0, int(rgb_m.group(2))))
-            b = min(255, max(0, int(rgb_m.group(3))))
-            return (r, g, b)
-        except ValueError:
-            return None
-
-    hex_m = HEX_COLOR_RE.search(c)
-    if hex_m:
-        h = hex_m.group(1)
-        if len(h) == 3:
-            h = "".join([x * 2 for x in h])
-        if len(h) == 6:
-            try:
-                return (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16))
-            except ValueError:
-                return None
-    return None
-
-
-def calculate_relative_luminance(rgb: tuple[int, int, int]) -> float:
-    def channel_lum(val: int) -> float:
-        v = val / 255.0
-        return v / 12.92 if v <= 0.04045 else ((v + 0.055) / 1.055) ** 2.4
-
-    return (
-        0.2126 * channel_lum(rgb[0])
-        + 0.7152 * channel_lum(rgb[1])
-        + 0.0722 * channel_lum(rgb[2])
-    )
-
-
-def calculate_contrast_ratio(
-    rgb1: tuple[int, int, int], rgb2: tuple[int, int, int]
-) -> float:
-    l1 = calculate_relative_luminance(rgb1)
-    l2 = calculate_relative_luminance(rgb2)
-    return (max(l1, l2) + 0.05) / (min(l1, l2) + 0.05)
-
-
-def strip_media_queries_linear(css: str) -> str:
-    if "@media" not in css.lower():
-        return css
-    res, i, n = [], 0, len(css)
-    while i < n:
-        if css[i : i + 6].lower() == "@media":
-            while i < n and css[i] != "{":
-                i += 1
-            braces = 1
-            i += 1
-            while i < n and braces > 0:
-                if css[i] == "{":
-                    braces += 1
-                elif css[i] == "}":
-                    braces -= 1
-                i += 1
-        else:
-            res.append(css[i])
-            i += 1
-    return "".join(res)
-
-
+@dataclass
 class SemanticASTNode:
-
-    def __init__(
-        self,
-        tag_name: str,
-        role: str,
-        text: str = "",
-        is_hidden: bool = False,
-        hidden_reason: str | None = None,
-        ai_confidence: float = 0.0,
-        contrast_ratio: float | None = None,
-    ):
-        self.tag_name = tag_name
-        self.role = role
-        self.text = text.strip()[:100]
-        self.is_hidden = is_hidden
-        self.hidden_reason = hidden_reason
-        self.ai_confidence = round(ai_confidence, 2)
-        self.contrast_ratio = (
-            round(contrast_ratio, 2) if contrast_ratio is not None else None
-        )
-        self.children: list["SemanticASTNode"] = []
+    tag: str
+    text: str
+    is_hidden: bool = False
+    hide_reason: str = ""
+    ai_confidence: float = 0.0
+    children: list["SemanticASTNode"] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
-        d: dict[str, Any] = {
-            "role": self.role,
-            "tag": self.tag_name,
-            "ai_confidence_pct": self.ai_confidence,
+        return {
+            "tag": self.tag,
+            "text": self.text[:120] + ("..." if len(self.text) > 120 else ""),
             "is_hidden": self.is_hidden,
+            "hide_reason": self.hide_reason,
+            "ai_confidence": round(self.ai_confidence, 4),
+            "children": [c.to_dict() for c in self.children],
         }
-        if self.text:
-            d["text_snippet"] = self.text
-        if self.is_hidden:
-            d["hidden_reason"] = self.hidden_reason
-        if self.contrast_ratio is not None:
-            d["contrast_ratio"] = self.contrast_ratio
-        if self.children:
-            d["children"] = [c.to_dict() for c in self.children]
-        return d
 
 
 @dataclass
 class ForensicResult:
-    html_ai_proba: float
-    cloaking_risk_score: float
+    verdict: str
+    global_risk_score: float
+    is_cloaking_detected: bool
     top_risk_factors: list[str]
-    features: dict[str, float | int]
-    ast_tree: SemanticASTNode
     evidence: dict[str, Any]
+    semantic_ast: list[dict[str, Any]]
     visible_text: str
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "html_ai_proba": self.html_ai_proba,
-            "cloaking_risk_score": self.cloaking_risk_score,
-            "top_risk_factors": self.top_risk_factors,
-            "features": self.features,
-            "ast_tree": self.ast_tree.to_dict(),
-            "evidence": self.evidence,
-            "visible_text": self.visible_text,
-        }
 
 
 class HTMLDetector:
-    FEATURE_KEYS = [
-        "tag_count",
-        "text_to_tag_ratio",
-        "dom_max_depth",
-        "dom_leaf_depth_variance",
-        "table_count",
-        "has_table_layout",
-        "mso_comment_count",
-        "has_mso_comments",
-        "vendor_css_density",
-        "important_css_density",
-        "ai_boilerplate_css",
-        "doctype_present",
-        "has_unsubscribe_link",
-        "has_legitimate_preheader",
-        "esp_signature_hits",
-        "modern_html5_tags_count",
-        "placeholder_hits",
-        "markdown_leftover_hits",
-        "hidden_elements_count",
-        "cloaked_text_ratio",
-        "zero_width_chars_count",
-        "bidi_spoofing_hits",
-        "tracking_pixel_count",
-        "dummy_link_count",
-        "has_forms",
-        "has_iframes",
-        "image_count",
-        "ai_alt_placeholder_hits",
-        "link_count",
-        "inline_style_to_class_ratio",
-        "chatgpt_copypaste_hits",
-        "gdocs_copypaste_hits",
-        "tailwind_css_hits",
-        "bold_list_anomalies",
-        "list_length_uniformity",
+    """
+    Enterprise HTML Forensic & DOM-Cloaking Detector (46 features).
+    Provides calibrated probabilities, context-adaptive thresholding tau(x),
+    WCAG 2.1 contrast analysis, CSS de-obfuscation, and Semantic AST extraction.
+    """
+    MAX_DEPTH = 35
+    MAX_CHILDREN_PER_NODE = 250
+
+    FEATURE_NAMES = [
+        # --- Group 1: LLM / AI Provenance & Structural Formatting (12) ---
+        "ai_clipboard_markers", "ai_css_vars_count", "markdown_artifact_count",
+        "ai_unicode_typo_density", "paragraph_length_cv", "list_length_uniformity",
+        "semantic_html5_ratio", "inline_formatting_density", "sentence_length_cv",
+        "bullet_list_ratio", "bold_lead_in_count", "code_block_count",
+        # --- Group 2: Human / Legacy / ESP / Corporate Clients (12) ---
+        "mso_conditional_count", "table_Nesting_depth", "has_table_layout",
+        "legacy_attr_count", "esp_signature_count", "client_quote_markers",
+        "has_unsubscribe_pattern", "media_query_count", "vml_namespace_count",
+        "meta_generator_present", "reply_forward_markers", "cid_attachment_count",
+        # --- Group 3: DOM Topology & Visual Stealth Cloaking (12) ---
+        "max_dom_depth", "avg_dom_branching", "tag_transition_entropy",
+        "tag_diversity_ratio", "text_to_tag_ratio", "hidden_text_ratio",
+        "zero_font_nodes", "low_contrast_nodes", "offscreen_nodes",
+        "zero_opacity_nodes", "display_none_nodes", "comment_density",
+        # --- Group 4: Phishing, Anti-Evasion & Prompt Injection (10) ---
+        "deceptive_link_count", "external_link_ratio", "url_shortener_count",
+        "suspicious_uri_count", "zero_width_char_density", "homoglyph_spoof_count",
+        "prompt_injection_score", "tracking_pixel_count", "form_input_count",
+        "script_iframe_count",
     ]
 
-    def __init__(
-        self,
-        model_path: str = "models/html_ai_detector.joblib",
-        default_bg: tuple[int, int, int] = (255, 255, 255),
-    ):
-        self.model_path = model_path
-        self.default_bg = default_bg
+    _NAMED_COLORS = {
+        "white": (255, 255, 255), "black": (0, 0, 0), "red": (255, 0, 0),
+        "blue": (0, 0, 255), "green": (0, 128, 0), "gray": (128, 128, 128),
+        "grey": (128, 128, 128), "silver": (192, 192, 192), "yellow": (255, 255, 0),
+    }
+    _ZW_REGEX = re.compile(r"[\u200b\u200c\u200d\u2060\ufeff\u00ad]")
+    _SHORTENER_REGEX = re.compile(r"(?:bit\.ly|tinyurl\.com|t\.co|goo\.gl|is\.gd|rb\.gy|ow\.ly)/", re.I)
+    _PROMPT_INJ_REGEX = re.compile(
+        r"(?:ignore\s+(?:all\s+)?(?:previous|prior)\s+instructions|"
+        r"disregard\s+(?:all\s+)?(?:previous|prior)|system\s*prompt|"
+        r"you\s+are\s+an?\s+ai|do\s+not\s+flag\s+as\s+spam|"
+        r"classify\s+this\s+(?:email|message)\s+as\s+(?:safe|legitimate|ham))", re.I
+    )
+
+    def __init__(self, model_path: str | None = None, use_adaptive_threshold: bool = True):
         self.model = None
-        self.feature_names: list[str] | None = None
-        self._load_model()
+        self.threshold = 0.52
+        self.use_adaptive_threshold = use_adaptive_threshold
 
-    def _load_model(self):
-        if self.model_path and os.path.exists(self.model_path):
+        if model_path is None:
+            local_dir = os.path.dirname(os.path.abspath(__file__)) if "__file__" in globals() else "."
+            candidate = os.path.join(local_dir, "html_forensic_classifier.joblib")
+            if os.path.exists(candidate):
+                model_path = candidate
+            elif os.path.exists("html_forensic_classifier.joblib"):
+                model_path = "html_forensic_classifier.joblib"
+
+        if model_path and os.path.exists(model_path):
             try:
-                bundle = joblib.load(self.model_path)
-                self.model = bundle["model"]
-                self.feature_names = bundle["feature_names"]
-                logger.info(f"ML-модель загружена: {self.model_path}")
+                bundle = joblib.load(model_path)
+                self.model = bundle.get("model")
+                self.threshold = float(bundle.get("threshold", 0.52))
             except Exception as e:
-                logger.error(f"Ошибка загрузки ML модели: {e}")
+                print(f"[HTMLDetector] Warning: could not load {model_path} ({e}). Using heuristic fallback.")
 
-    def _extract_css_context(
-        self, soup: BeautifulSoup
-    ) -> tuple[dict[str, str], float, float, int]:
-        class_rules = {}
-        total_props = 0
-        vendor_props = 0
-        important_props = 0
-        ai_boilerplate_hits = 0
-
-        for s in soup.find_all("style"):
-            css = s.get_text()[:40000]
-            if AI_BOILERPLATE_CSS_RE.search(css):
-                ai_boilerplate_hits = 1
-
-            clean_css = strip_media_queries_linear(css)
-
-            for decl in re.findall(r"\{([^}]+)\}", clean_css):
-                raw_props = [p.strip() for p in decl.split(";") if ":" in p]
-                total_props += len(raw_props)
-                for p in raw_props:
-                    prop_name = p.split(":")[0].strip()
-                    if VENDOR_CSS_RE.search(prop_name):
-                        vendor_props += 1
-                    if "!important" in p.lower():
-                        important_props += 1
-
-            for cls_name, decl in re.findall(
-                r"\.([a-zA-Z0-9_-]+)\s*\{([^}]+)\}", clean_css
-            ):
-                class_rules[cls_name.lower()] = decl.lower()
-
-        denom = max(1, total_props)
-        vendor_density = (
-            round(vendor_props / denom, 4) if total_props > 0 else 0.0
+    @staticmethod
+    def _deobfuscate_css(css_text: str) -> str:
+        if not css_text:
+            return ""
+        res = html.unescape(css_text)
+        res = re.sub(r"/\*.*?\*/", "", res, flags=re.S)
+        res = re.sub(
+            r"\\([0-9a-fA-F]{1,6})\s?",
+            lambda m: chr(int(m.group(1), 16)) if int(m.group(1), 16) < 0x110000 else "",
+            res,
         )
-        important_density = (
-            round(important_props / denom, 4) if total_props > 0 else 0.0
+        return res.lower()
+
+    @classmethod
+    def _parse_style_blocks(cls, style_text: str) -> dict[str, str]:
+        clean_css = cls._deobfuscate_css(style_text)
+        clean_css = re.sub(r"@media[^{]+\{([\s\S]*?)\}\s*\}", r"\1}", clean_css)
+        rules_map: dict[str, str] = {}
+        for match in re.finditer(r"([^{}@]+)\{([^}]*)\}", clean_css):
+            selectors_raw, props = match.group(1), match.group(2).strip()
+            if not props:
+                continue
+            for sel in selectors_raw.split(","):
+                parts = sel.strip().split()
+                if parts:
+                    target = parts[-1]
+                    rules_map[target] = rules_map.get(target, "") + ";" + props
+        return rules_map
+
+    @classmethod
+    def _parse_color(cls, val: str) -> tuple[tuple[int, int, int] | None, float]:
+        val = val.strip().lower()
+        if "transparent" in val:
+            return (255, 255, 255), 0.0
+        if val in cls._NAMED_COLORS:
+            return cls._NAMED_COLORS[val], 1.0
+        m_hex = re.search(r"#([0-9a-f]{3,8})\b", val)
+        if m_hex:
+            h = m_hex.group(1)
+            if len(h) == 3:
+                return tuple(int(c * 2, 16) for c in h), 1.0
+            elif len(h) == 6:
+                return (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)), 1.0
+            elif len(h) == 8:
+                return (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)), int(h[6:8], 16) / 255.0
+        m_rgba = re.search(
+            r"rgba?\s*\(\s*(\d+)[\s,]+(\d+)[\s,]+(\d+)(?:\s*[,/]\s*([0-9.]+)(%?))?\s*\)", val
         )
-        return (
-            class_rules,
-            vendor_density,
-            important_density,
-            ai_boilerplate_hits,
-        )
+        if m_rgba:
+            rgb = (min(255, int(m_rgba.group(1))), min(255, int(m_rgba.group(2))), min(255, int(m_rgba.group(3))))
+            if m_rgba.group(4) is not None:
+                alpha = float(m_rgba.group(4)) / (100.0 if m_rgba.group(5) == "%" else 1.0)
+            else:
+                alpha = 1.0
+            return rgb, alpha
+        return None, 1.0
 
-    def _check_hidden_status(
-        self,
-        style_str: str,
-        parent_bg: tuple[int, int, int],
-        depth: int,
-        text: str,
-        is_hidden_attr: bool,
-    ) -> tuple[bool, str | None, tuple[int, int, int], float | None]:
-        bg_match = re.search(
-            r"(?<![a-z-])(?:background-color|background)\s*:\s*([^;!]+)",
-            style_str,
-        )
-        effective_bg = (
-            parse_color_to_rgb(bg_match.group(1)) if bg_match else parent_bg
-        )
-        if effective_bg is None:
-            effective_bg = parent_bg
+    @staticmethod
+    def _wcag_contrast(rgb1: tuple[int, int, int], rgb2: tuple[int, int, int]) -> float:
+        def _lum(rgb):
+            c_lin = [(c / 255.0) / 12.92 if (c / 255.0) <= 0.03928 else (((c / 255.0) + 0.055) / 1.055) ** 2.4 for c in rgb]
+            return 0.2126 * c_lin[0] + 0.7152 * c_lin[1] + 0.0722 * c_lin[2]
+        l1, l2 = _lum(rgb1), _lum(rgb2)
+        return (max(l1, l2) + 0.05) / (min(l1, l2) + 0.05)
 
-        if is_hidden_attr:
-            return True, "HTML_HIDDEN_ATTR", effective_bg, None
+    def _get_effective_style(self, tag: Tag, css_rules_map: dict[str, str]) -> str:
+        collected = []
+        t_name = tag.name.lower()
+        if t_name in css_rules_map:
+            collected.append(css_rules_map[t_name])
+        for cls_name in (tag.get("class") or []):
+            for key in (f".{cls_name.lower()}", f"{t_name}.{cls_name.lower()}"):
+                if key in css_rules_map:
+                    collected.append(css_rules_map[key])
+        t_id = tag.get("id")
+        if t_id and f"#{t_id.lower()}" in css_rules_map:
+            collected.append(css_rules_map[f"#{t_id.lower()}"])
+        if tag.get("style"):
+            collected.append(self._deobfuscate_css(tag.get("style")))
+        return ";".join(collected)
 
-        for p in HIDDEN_CSS_PATTERNS:
-            if p.search(style_str):
-                if (
-                    "display" in p.pattern
-                    and depth <= 3
-                    and 0 < len(text) <= 200
-                ):
-                    return False, "PREHEADER", effective_bg, None
-                return True, "GEOMETRIC_OR_CSS_HIDDEN", effective_bg, None
+    def _check_node_stealth(
+        self, tag: Tag, css_rules_map: dict[str, str], parent_bg: tuple[int, int, int]
+    ) -> tuple[bool, str, dict[str, int], tuple[int, int, int]]:
+        flags = {"zero_font": 0, "low_contrast": 0, "offscreen": 0, "zero_opacity": 0, "display_none": 0}
+        reasons = []
+        style = self._get_effective_style(tag, css_rules_map)
 
-        has_bg_image = bool(
-            re.search(r"background(?:-image)?\s*:\s*url\(", style_str)
-        )
+        if tag.has_attr("hidden") or tag.get("aria-hidden") == "true":
+            reasons.append("hidden_attr")
+            flags["display_none"] = 1
+        if re.search(r"display\s*:\s*none|visibility\s*:\s*(?:hidden|collapse)", style):
+            reasons.append("display_none")
+            flags["display_none"] = 1
+        if re.search(r"opacity\s*:\s*0(?:\.0+)?\b|opacity\s*:\s*0\.0[1-4]\b", style):
+            reasons.append("zero_opacity")
+            flags["zero_opacity"] = 1
+            flags["offscreen"] = 1
 
-        color_match = re.search(r"(?<![a-z-])color\s*:\s*([^;!]+)", style_str)
-        if color_match:
-            raw_c = color_match.group(1).strip().lower()
-            if raw_c == "transparent":
-                return True, "COLOR_TRANSPARENT", effective_bg, 1.0
+        m_fs = re.search(r"font-size\s*:\s*(\d+(?:\.\d+)?)\s*(px|pt|em|rem|%)?", style)
+        if m_fs and float(m_fs.group(1)) <= 1.0:
+            reasons.append("zero_font")
+            flags["zero_font"] = 1
 
-            if "rgba" in raw_c and parse_color_to_rgb(raw_c) is None:
-                return True, "RGBA_ALPHA_ZERO_CLOAKING", effective_bg, 1.0
+        if (
+            re.search(r"(?:left|top|text-indent|margin-left|margin-top)\s*:\s*-\d{3,5}px", style)
+            or re.search(r"max-height\s*:\s*0(?:px)?\b|height\s*:\s*0(?:px)?\b.*overflow\s*:\s*hidden", style)
+            or re.search(r"clip\s*:\s*rect\(\s*0|transform\s*:\s*scale\(\s*0\s*\)", style)
+        ):
+            reasons.append("offscreen_positioning")
+            flags["offscreen"] = 1
 
-            text_rgb = parse_color_to_rgb(raw_c)
-            if text_rgb and effective_bg:
-                contrast = calculate_contrast_ratio(text_rgb, effective_bg)
-                if contrast < 1.25:
-                    return (
-                        True,
-                        f"LOW_CONTRAST_{contrast:.2f}:1",
-                        effective_bg,
-                        contrast,
-                    )
-                if has_bg_image and contrast < 2.0:
-                    return (
-                        True,
-                        "BG_IMAGE_CLOAKING_RISK",
-                        effective_bg,
-                        contrast,
-                    )
+        cur_bg = parent_bg
+        bg_cand = tag.get("bgcolor") or ""
+        m_bg = re.search(r"background(?:-color)?\s*:\s*([^;]+)", style)
+        if m_bg:
+            bg_cand = m_bg.group(1)
+        if bg_cand:
+            p_bg, a_bg = self._parse_color(bg_cand)
+            if p_bg and a_bg > 0.1:
+                cur_bg = p_bg
 
-        return False, None, effective_bg, None
+        fg_cand = tag.get("color") or ""
+        m_fg = re.search(r"(?<![a-z-])color\s*:\s*([^;]+)", style)
+        if m_fg:
+            fg_cand = m_fg.group(1)
+        if fg_cand:
+            p_fg, a_fg = self._parse_color(fg_cand)
+            if a_fg <= 0.05:
+                reasons.append("transparent_color")
+                flags["zero_opacity"] = 1
+                flags["low_contrast"] = 1
+            elif p_fg:
+                ratio = self._wcag_contrast(p_fg, cur_bg)
+                if ratio < 1.30:
+                    reasons.append(f"low_contrast({ratio:.2f})")
+                    flags["low_contrast"] = 1
+
+        return (len(reasons) > 0), ",".join(reasons), flags, cur_bg
 
     def extract_features(
-        self, html: str, ai_spans: list[dict] | None = None
-    ) -> tuple[dict[str, float | int], SemanticASTNode, dict[str, Any]]:
-        if not html or not html.strip():
-            return (
-                self._empty_features(),
-                SemanticASTNode("root", "EMPTY"),
-                {
-                    "cloaked_snippets": [],
-                    "placeholders": [],
-                    "modern_tags_used": [],
-                    "visible_text": "",
-                },
-            )
+        self, raw_html: str, ai_spans: list[dict] | None = None
+    ) -> tuple[dict[str, float], list[SemanticASTNode], str, dict[str, Any]]:
+        raw_html = raw_html or ""
+        soup = BeautifulSoup(raw_html, "html.parser")
 
-        if len(html) > 300000:
-            html = html[:300000]
+        style_blocks = "\n".join(s.get_text() for s in soup.find_all("style"))
+        css_rules_map = self._parse_style_blocks(style_blocks)
+        media_query_count = len(re.findall(r"@media\b", style_blocks, flags=re.I))
 
-        try:
-            soup = BeautifulSoup(html, "lxml")
-        except Exception:
-            soup = BeautifulSoup(html, "html.parser")
+        comments = [str(c) for c in soup.find_all(string=lambda t: isinstance(t, Comment))]
+        comment_chars = sum(len(c) for c in comments)
+        comment_density = comment_chars / max(1, len(raw_html))
+        mso_count = sum(1 for c in comments if re.search(r"\[if\s+[^\]]*mso", c, re.I))
+        mso_count += len(re.findall(r"\bmso-[a-z-]+:", raw_html, flags=re.I))
+        vml_count = len(re.findall(r"<v:[a-z]+|urn:schemas-microsoft-com:vml", raw_html, flags=re.I))
+        meta_gen = 1.0 if soup.find("meta", attrs={"name": re.compile(r"^generator$", re.I)}) else 0.0
+        cid_count = len(re.findall(r"src\s*=\s*['\"]cid:", raw_html, flags=re.I))
+        script_iframe_count = len(soup.find_all(["script", "iframe", "object", "embed"]))
+        form_input_count = len(soup.find_all(["form", "input", "button", "select"]))
 
-        # 1. Сначала извлекаем CSS-правила из <style>
-        (
-            class_styles,
-            vendor_css_density,
-            important_css_density,
-            ai_boilerplate_css,
-        ) = self._extract_css_context(soup)
-
-        # 2. Удаляем служебные теги, чтобы CSS-селекторы не попали в text_full и плейсхолдеры
-        for s_tag in soup(["script", "style", "noscript", "head", "title"]):
-            s_tag.decompose()
-
-        body = soup.body or soup
-        all_tags = soup.find_all(True)
-        tag_count = len(all_tags)
-        text_full = soup.get_text(separator=" ", strip=True)
-        text_len = max(len(text_full), 1)
-
-        tables = soup.find_all("table")
-        images = soup.find_all("img")
-        links = soup.find_all("a")
-        forms = soup.find_all("form")
-        iframes = soup.find_all("iframe")
-
-        chatgpt_copypaste_hits = 0
-        gdocs_copypaste_hits = len(GDOCS_GUID_RE.findall(html))
-        tailwind_css_hits = len(TAILWIND_VARS_RE.findall(html))
-        esp_signature_hits = 0
-        bidi_spoofing_hits = len(BIDI_CONTROL_CHARS_RE.findall(html))
-        inline_styles = 0
-        class_attrs = 0
-
-        for tag in all_tags:
-            if tag.name == "bdo" or str(tag.get("dir", "")).lower() == "rtl":
-                bidi_spoofing_hits += 1
-
-            st = str(tag.get("style", ""))
-            if st:
-                inline_styles += 1
-                if LLM_COPYPASTE_FONTS.search(st) or LLM_COPYPASTE_BG.search(
-                    st
-                ):
-                    chatgpt_copypaste_hits += 1
-                if BIDI_SPOOFING_RE.search(st):
-                    bidi_spoofing_hits += 1
-                if not ai_boilerplate_css and AI_BOILERPLATE_CSS_RE.search(st):
-                    ai_boilerplate_css = 1
-
-            cls_list = tag.get("class")
-            if cls_list:
-                class_attrs += 1
-                cls_joined = (
-                    " ".join(cls_list).lower()
-                    if isinstance(cls_list, list)
-                    else str(cls_list).lower()
-                )
-                if any(hint in cls_joined for hint in ESP_CLASS_HINTS):
-                    esp_signature_hits += 1
-
-        li_tags = soup.find_all("li")
-        bold_li_hits = sum(1 for li in li_tags if li.find(["strong", "b"]))
-        li_word_counts = [
-            len(li.get_text(strip=True).split())
-            for li in li_tags
-            if len(li.get_text(strip=True)) > 0
-        ]
-        if len(li_word_counts) >= 3:
-            mean_wc = max(float(np.mean(li_word_counts)), 1.0)
-            cv_wc = float(np.std(li_word_counts)) / mean_wc
-            list_length_uniformity = round(1.0 / (1.0 + cv_wc), 4)
-        else:
-            list_length_uniformity = 0.0
+        prompt_inj_hits = len(self._PROMPT_INJ_REGEX.findall(" ".join(comments)))
 
         tracking_pixels = 0
-        ai_alt_placeholder_hits = 0
-        for img in images:
-            w, h = str(img.get("width", "")), str(img.get("height", ""))
-            src = str(img.get("src", "")).lower()
-            if w in ("0", "1") or h in ("0", "1") or "track" in src:
+        for img in soup.find_all("img"):
+            w, h = str(img.get("width", "")).strip(), str(img.get("height", "")).strip()
+            st = (img.get("style") or "").lower().replace(" ", "")
+            if w in {"0", "1", "1px", "0px"} or h in {"0", "1", "1px", "0px"} or "width:1px" in st:
                 tracking_pixels += 1
-            alt_text = str(img.get("alt", "")).strip()
-            if alt_text and AI_ALT_PLACEHOLDERS_RE.match(alt_text):
-                ai_alt_placeholder_hits += 1
 
-        dummy_links = sum(
-            1
-            for a in links
-            if str(a.get("href", "")).strip() in ("", "#", "javascript:void(0)")
-            or "example.com" in str(a.get("href", "")).lower()
-        )
-        list_unsubscribe_link = any(
-            "unsubscribe" in str(a.get("href", "")).lower()
-            or "отписаться" in a.get_text().lower()
-            for a in links
-        )
+        for noisy in soup.find_all(["script", "style", "meta", "link", "head", "title", "noscript"]):
+            noisy.decompose()
 
-        comments = soup.find_all(string=lambda s: isinstance(s, Comment))
-        mso_comments = sum(
-            1 for c in comments if "mso" in c.lower() or "[if" in c.lower()
-        )
+        ai_clip_markers = len(re.findall(
+            r"(?:docs-internal-guid|data-start=|data-end=|data-message-author-role|Söhne|font-claude-message|prose\s+w-full|markdown\s+prose)",
+            raw_html, flags=re.I
+        ))
+        ai_css_vars = len(re.findall(r"--tw-[a-z0-9-]+|--cib-[a-z0-9-]+", raw_html, flags=re.I))
+        esp_sigs = len(re.findall(
+            r"(?:mc:edit|mcnTextContent|sendgrid|mailchimp|hubspot|hs_cos_wrapper|list-manage\.com|ConstantContact|mj-column-per-100|stripo)",
+            raw_html, flags=re.I
+        ))
+        client_quotes = len(re.findall(
+            r"(?:gmail_quote|gmail_attr|WordSection1|AppleMailSignature|yahoo_quoted|outlook-mobile-signature)",
+            raw_html, flags=re.I
+        ))
+        reply_fwd = len(re.findall(r"(?:Original Message|Forwarded message|Начало пересылаемого сообщения|От:\s|Кому:\s)", raw_html, flags=re.I))
+        has_unsub = 1.0 if re.search(r"unsubscribe|отписаться|opt-out|manage\s+preferences", raw_html, flags=re.I) else 0.0
 
-        modern_tags = [
-            tag.name.lower()
-            for tag in all_tags
-            if tag.name.lower() in MODERN_HTML5_TAGS
-        ]
-        modern_tag_hits = len(modern_tags)
+        all_tags = soup.find_all(True)
+        total_tags = len(all_tags)
+        tag_names = [t.name.lower() for t in all_tags]
+        tag_diversity_ratio = len(set(tag_names)) / max(1, total_tags)
 
-        doctype_present = int(html.strip().lower().startswith("<!doctype"))
-        zero_width_hits = len(ZERO_WIDTH_REGEX.findall(html))
-
-        hidden_elements_count = 0
-        hidden_text_chars = 0
-        cloaked_snippets = []
-        visible_text_chunks: list[str] = []
-        max_dom_depth = 0
-        leaf_depths = []
-        has_legitimate_preheader = False
-        root = SemanticASTNode("email", "DOCUMENT_ROOT")
-
-        def match_ai_conf(snippet: str) -> float:
-            if not ai_spans or not snippet or len(snippet.split()) < 3:
-                return 0.0
-            snip_w = set(re.findall(r"\b\w+\b", snippet.lower()))
-            for sp in ai_spans:
-                target_w = set(
-                    re.findall(r"\b\w+\b", sp.get("text_segment", "").lower())
-                )
-                if snip_w and len(snip_w & target_w) / len(snip_w) >= 0.40:
-                    return float(sp.get("confidence_pct", 0.0))
-            return 12.0
-
-        def _traverse(
-            tag: Tag,
-            parent_node: SemanticASTNode,
-            parent_bg: tuple[int, int, int],
-            logical_depth: int,
-            raw_depth: int,
-        ):
-            nonlocal hidden_elements_count, hidden_text_chars, max_dom_depth, has_legitimate_preheader
-            if logical_depth > max_dom_depth:
-                max_dom_depth = logical_depth
-            if logical_depth > MAX_DOM_TRAVERSAL_DEPTH or raw_depth > 45:
-                return
-
-            direct_children = [
-                c for c in tag.find_all(recursive=False) if isinstance(c, Tag)
-            ]
-            if not direct_children:
-                leaf_depths.append(logical_depth)
-
-            for child in direct_children[:MAX_CHILDREN_PER_NODE]:
-                style_str = str(child.get("style", "")).lower()
-                classes = (
-                    [c.lower() for c in child.get("class", [])]
-                    if isinstance(child.get("class"), list)
-                    else []
-                )
-                for c in classes:
-                    if c in class_styles:
-                        style_str += ";" + class_styles[c]
-
-                direct_text = " ".join(
-                    t.strip()
-                    for t in child.find_all(string=True, recursive=False)
-                    if not isinstance(t, Comment) and t.strip()
-                )
-                is_hidden_attr = child.get("hidden") is not None
-
-                is_hidden, reason, eff_bg, contrast = self._check_hidden_status(
-                    style_str,
-                    parent_bg,
-                    logical_depth,
-                    direct_text,
-                    is_hidden_attr,
-                )
-
-                if reason == "PREHEADER":
-                    has_legitimate_preheader = True
-
-                if is_hidden:
-                    hidden_elements_count += 1
-                    subtree_text = child.get_text(separator=" ", strip=True)
-                    hidden_text_chars += len(subtree_text)
-                    cloaked_snippets.append({
-                        "tag": child.name,
-                        "reason": reason,
-                        "text": (direct_text or subtree_text)[:60]
-                        or "[Скрытый блок]",
-                    })
-                    # Не идем вглубь скрытого узла для сбора видимого текста (защита NLP от отравления)
-                    node = SemanticASTNode(
-                        child.name,
-                        "CLOAKED",
-                        direct_text,
-                        True,
-                        reason,
-                        0.0,
-                        contrast,
-                    )
-                    parent_node.children.append(node)
-                    continue
-
-                if direct_text:
-                    visible_text_chunks.append(direct_text)
-
-                children_tags = [
-                    c
-                    for c in child.find_all(recursive=False)
-                    if isinstance(c, Tag)
-                ]
-                role = (
-                    "HEADER"
-                    if child.name in ("h1", "h2", "h3")
-                    else ("CONTAINER" if children_tags else "PARAGRAPH")
-                )
-                ai_conf = match_ai_conf(direct_text)
-
-                if (
-                    role == "CONTAINER"
-                    and not direct_text
-                    and len(children_tags) == 1
-                ):
-                    _traverse(
-                        child,
-                        parent_node,
-                        eff_bg,
-                        logical_depth,
-                        raw_depth + 1,
-                    )
-                    continue
-
-                node = SemanticASTNode(
-                    child.name,
-                    role,
-                    direct_text,
-                    False,
-                    reason,
-                    ai_conf,
-                    contrast,
-                )
-                parent_node.children.append(node)
-                if children_tags:
-                    _traverse(
-                        child, node, eff_bg, logical_depth + 1, raw_depth + 1
-                    )
-
-        # Если текст лежит прямо в body без тегов-оберток
-        root_direct_text = " ".join(
-            t.strip()
-            for t in body.find_all(string=True, recursive=False)
-            if not isinstance(t, Comment) and t.strip()
-        )
-        if root_direct_text:
-            visible_text_chunks.append(root_direct_text)
-
-        _traverse(body, root, self.default_bg, logical_depth=1, raw_depth=1)
-
-        leaf_variance = (
-            float(np.var(leaf_depths)) if len(leaf_depths) > 1 else 0.0
-        )
-        cloaked_text_ratio = min(1.0, round(hidden_text_chars / text_len, 4))
-        clean_visible_text = (
-            " ".join(visible_text_chunks).strip() or text_full
-        )
-
-        features: dict[str, float | int] = {
-            "tag_count": tag_count,
-            "text_to_tag_ratio": round(text_len / max(1, tag_count), 2),
-            "dom_max_depth": max_dom_depth,
-            "dom_leaf_depth_variance": round(leaf_variance, 2),
-            "table_count": len(tables),
-            "has_table_layout": int(len(tables) > 0),
-            "mso_comment_count": mso_comments,
-            "has_mso_comments": int(mso_comments > 0),
-            "vendor_css_density": vendor_css_density,
-            "important_css_density": important_css_density,
-            "ai_boilerplate_css": ai_boilerplate_css,
-            "doctype_present": doctype_present,
-            "has_unsubscribe_link": int(list_unsubscribe_link),
-            "has_legitimate_preheader": int(has_legitimate_preheader),
-            "esp_signature_hits": esp_signature_hits,
-            "modern_html5_tags_count": modern_tag_hits,
-            "placeholder_hits": sum(
-                len(p.findall(clean_visible_text)) for p in PLACEHOLDER_REGEX
-            ),
-            "markdown_leftover_hits": sum(
-                len(p.findall(clean_visible_text)) for p in MARKDOWN_REGEX
-            ),
-            "hidden_elements_count": hidden_elements_count,
-            "cloaked_text_ratio": cloaked_text_ratio,
-            "zero_width_chars_count": zero_width_hits,
-            "bidi_spoofing_hits": bidi_spoofing_hits,
-            "tracking_pixel_count": tracking_pixels,
-            "dummy_link_count": dummy_links,
-            "has_forms": int(len(forms) > 0),
-            "has_iframes": int(len(iframes) > 0),
-            "image_count": len(images),
-            "ai_alt_placeholder_hits": ai_alt_placeholder_hits,
-            "link_count": len(links),
-            "inline_style_to_class_ratio": round(
-                inline_styles / max(class_attrs, 1), 4
-            ),
-            "chatgpt_copypaste_hits": chatgpt_copypaste_hits,
-            "gdocs_copypaste_hits": gdocs_copypaste_hits,
-            "tailwind_css_hits": tailwind_css_hits,
-            "bold_list_anomalies": bold_li_hits,
-            "list_length_uniformity": list_length_uniformity,
-        }
-
-        evidence = {
-            "cloaked_snippets": cloaked_snippets[:5],
-            "placeholders": list(
-                set(
-                    re.findall(
-                        r"\[[A-Za-zА-Яа-яЁё0-9 _/-]{2,35}\]|\{\{[a-zA-Z0-9_.-]+\}\}",
-                        clean_visible_text,
-                    )
-                )
-            )[:5],
-            "modern_tags_used": list(set(modern_tags))[:5],
-            "visible_text": clean_visible_text,
-        }
-
-        return features, root, evidence
-
-    def _empty_features(self) -> dict[str, float | int]:
-        return {k: 0 for k in self.FEATURE_KEYS}
-
-    def _explain_triggers(self, feats: dict[str, float | int]) -> list[str]:
-        triggers = []
-        if feats["chatgpt_copypaste_hits"] > 0:
-            triggers.append(
-                f"LLM_UI_PASTE_SCARS ({feats['chatgpt_copypaste_hits']})"
-            )
-        if feats["tailwind_css_hits"] > 0:
-            triggers.append(
-                f"TAILWIND_ARTIFACT_VARS ({feats['tailwind_css_hits']})"
-            )
-        if feats["gdocs_copypaste_hits"] > 0:
-            triggers.append("GDOCS_INTERMEDIATE_PASTE")
-        if feats["markdown_leftover_hits"] > 0:
-            triggers.append(
-                f"UNPARSED_MARKDOWN ({feats['markdown_leftover_hits']})"
-            )
-        if feats["placeholder_hits"] > 0:
-            triggers.append(
-                f"UNFILLED_PLACEHOLDERS ({feats['placeholder_hits']})"
-            )
-        if feats["ai_alt_placeholder_hits"] > 0:
-            triggers.append("GENERIC_AI_ALT_TAGS")
-        if feats["ai_boilerplate_css"] > 0 and feats["has_mso_comments"] == 0:
-            triggers.append("STERILE_AI_CSS_BOILERPLATE")
-        if (
-            feats["modern_html5_tags_count"] >= 2
-            and feats["has_table_layout"] == 0
-        ):
-            triggers.append("WEB_HTML5_INSTEAD_OF_EMAIL_TABLES")
-        if (
-            feats["bold_list_anomalies"] >= 2
-            and feats["list_length_uniformity"] > 0.65
-        ):
-            triggers.append("UNIFORM_BOLD_LIST_PATTERN")
-        if (
-            feats["hidden_elements_count"] > 0
-            or feats["cloaked_text_ratio"] > 0.05
-        ):
-            triggers.append(
-                f"ADVERSARIAL_CLOAKING (ratio={feats['cloaked_text_ratio']})"
-            )
-        if feats["bidi_spoofing_hits"] > 0:
-            triggers.append("BIDI_RTL_TEXT_SPOOFING")
-        return triggers
-
-    def predict(
-        self, html: str, ai_spans: list[dict] | None = None
-    ) -> dict[str, Any]:
-        feats, ast_tree, evidence = self.extract_features(
-            html, ai_spans=ai_spans
-        )
-        visible_text = evidence.pop("visible_text", "")
-
-        cloaking_risk = 0.0
-        if feats["hidden_elements_count"] >= 1:
-            cloaking_risk += 0.55
-        if feats["cloaked_text_ratio"] > 0.15:
-            cloaking_risk += 0.35
-        if feats["bidi_spoofing_hits"] > 0:
-            cloaking_risk += 0.60
-        if feats["zero_width_chars_count"] > 3:
-            cloaking_risk += 0.25
-        if feats["has_forms"] > 0 or feats["has_iframes"] > 0:
-            cloaking_risk += 0.40
-        cloaking_risk_score = min(1.0, round(cloaking_risk, 4))
-
-        if self.model is not None and self.feature_names is not None:
-            x_vec = np.array(
-                [[float(feats.get(col, 0.0)) for col in self.feature_names]],
-                dtype=np.float64,
-            )
-            proba = round(float(self.model.predict_proba(x_vec)[0, 1]), 4)
+        if len(tag_names) > 1:
+            bigrams = list(zip(tag_names[:-1], tag_names[1:]))
+            bg_counts = Counter(bigrams)
+            tag_entropy = -sum((c / len(bigrams)) * math.log2(c / len(bigrams)) for c in bg_counts.values())
         else:
-            ai_risk = 0.0
-            if feats["chatgpt_copypaste_hits"] > 0:
-                ai_risk += 0.45
-            if feats["tailwind_css_hits"] > 0:
-                ai_risk += 0.30
-            if feats["markdown_leftover_hits"] > 0:
-                ai_risk += 0.35
-            if feats["placeholder_hits"] > 0:
-                ai_risk += 0.35
-            if feats["ai_boilerplate_css"] > 0:
-                ai_risk += 0.25
-            if feats["ai_alt_placeholder_hits"] > 0:
-                ai_risk += 0.20
-            if (
-                feats["modern_html5_tags_count"] >= 2
-                and feats["has_mso_comments"] == 0
-            ):
-                ai_risk += 0.25
-            if feats["bold_list_anomalies"] >= 2:
-                ai_risk += 0.20
-            if feats["list_length_uniformity"] > 0.70:
-                ai_risk += 0.15
+            tag_entropy = 0.0
 
-            if feats["has_mso_comments"] > 0 or feats["esp_signature_hits"] > 0:
-                ai_risk -= 0.35
-            if feats["has_unsubscribe_link"] and feats["has_table_layout"]:
-                ai_risk -= 0.20
+        sem_tags = sum(1 for n in tag_names if n in {"article", "section", "header", "footer", "main", "nav"})
+        semantic_html5_ratio = sem_tags / max(1, total_tags)
+        bullet_list_ratio = sum(1 for n in tag_names if n in {"ul", "ol", "li"}) / max(1, total_tags)
+        code_block_count = len(soup.find_all(["pre", "code"]))
 
-            proba = min(1.0, max(0.0, round(ai_risk, 4)))
+        bold_lead_in_count = 0
+        for block in soup.find_all(["li", "p"]):
+            first_child = next((c for c in block.children if not isinstance(c, Comment) and str(c).strip()), None)
+            if isinstance(first_child, Tag) and first_child.name.lower() in {"strong", "b"}:
+                bold_lead_in_count += 1
 
-        result = ForensicResult(
-            html_ai_proba=proba,
-            cloaking_risk_score=cloaking_risk_score,
-            top_risk_factors=self._explain_triggers(feats),
-            features=feats,
-            ast_tree=ast_tree,
-            evidence=evidence,
-            visible_text=visible_text,
-        )
-        return result.to_dict()
-
-
-def _extract_single_worker(html_str: str) -> dict[str, float | int]:
-    det = HTMLDetector(model_path="")
-    return det.extract_features(html_str)[0]
-
-
-def train_html_model(
-    human_dataset_path: str,
-    ai_dataset_path: str,
-    model_out: str = "models/html_ai_detector.joblib",
-):
-    def load_records(path: str, default_label: int) -> pd.DataFrame:
-        with open(path, "r", encoding="utf-8") as f:
-            rows = [json.loads(line) for line in f if line.strip()]
-        df = pd.DataFrame(rows)
-        if "label" not in df.columns:
-            df["label"] = default_label
-        html_col = "html" if "html" in df.columns else "raw_html"
-        return df[[html_col, "label"]].rename(columns={html_col: "html"})
-
-    logger.info("Загрузка датасетов...")
-    combined = pd.concat(
-        [
-            load_records(human_dataset_path, 0),
-            load_records(ai_dataset_path, 1),
-        ],
-        ignore_index=True,
-    )
-
-    html_list = combined["html"].fillna("").tolist()
-    logger.info(f"Извлечение признаков из {len(html_list)} писем...")
-
-    with ProcessPoolExecutor() as executor:
-        feature_rows = list(
-            executor.map(_extract_single_worker, html_list, chunksize=50)
+        legacy_attrs = sum(
+            1 for t in all_tags
+            if any(t.has_attr(a) for a in ("cellpadding", "cellspacing", "bgcolor", "valign", "border"))
+            or t.name in {"font", "center"}
         )
 
-    df_features = pd.DataFrame(feature_rows)
-    X = df_features.drop(columns=["label", "lang"], errors="ignore")
-    y = combined["label"].astype(int).values
+        max_table_depth = max((1 + len(tbl.find_parents("table")) for tbl in soup.find_all("table")), default=0)
+        has_table_layout = 1.0 if (max_table_depth >= 1 and len(soup.find_all("td")) >= 2) else 0.0
 
-    X_train, X_test, y_train, y_test = train_test_split(
-        X.values, y, test_size=0.2, random_state=42, stratify=y
-    )
+        deceptive_links, ext_links, shortener_links, susp_uris = 0, 0, 0, 0
+        all_hrefs = []
+        for a in soup.find_all("a", href=True):
+            href = unquote(html.unescape(a["href"].strip())).lower()
+            all_hrefs.append(href)
+            vis_a = a.get_text(strip=True).lower()
+            if href.startswith(("http://", "https://")):
+                ext_links += 1
+            if self._SHORTENER_REGEX.search(href):
+                shortener_links += 1
+            if href.startswith(("javascript:", "data:", "vbscript:")):
+                susp_uris += 1
+            m_vis = re.search(r"https?://([a-z0-9.-]+\.[a-z]{2,})", vis_a)
+            m_hrf = re.search(r"https?://([a-z0-9.-]+\.[a-z]{2,})", href)
+            if m_vis and m_hrf and (m_vis.group(1) != m_hrf.group(1)):
+                deceptive_links += 1
+        external_link_ratio = ext_links / max(1, len(all_hrefs))
 
-    base_model = HistGradientBoostingClassifier(
-        max_depth=6, learning_rate=0.05, max_iter=350, random_state=42
-    )
-    calibrated_model = CalibratedClassifierCV(
-        estimator=base_model, method="isotonic", cv=5
-    )
-    calibrated_model.fit(X_train, y_train)
+        visible_chars, hidden_chars = 0, 0
+        zero_font_nodes, low_contrast_nodes, offscreen_nodes = 0, 0, 0
+        zero_opacity_nodes, display_none_nodes = 0, 0
+        max_dom_depth = 0
+        branch_counts = []
+        cloaked_snippets = []
+        BLOCK_TAGS = {"p", "div", "td", "li", "h1", "h2", "h3", "h4", "article", "section", "blockquote", "tr", "table"}
 
-    y_probs = calibrated_model.predict_proba(X_test)[:, 1]
-    y_preds = calibrated_model.predict(X_test)
+        def _traverse(el: Tag, depth: int, inh_hid: bool, inh_reason: str, p_bg: tuple[int, int, int]) -> list[SemanticASTNode]:
+            nonlocal visible_chars, hidden_chars, zero_font_nodes, low_contrast_nodes, offscreen_nodes
+            nonlocal zero_opacity_nodes, display_none_nodes, max_dom_depth
+            if depth > max_dom_depth:
+                max_dom_depth = depth
+            if depth > self.MAX_DEPTH:
+                return []
 
-    logger.info(f"ROC-AUC: {roc_auc_score(y_test, y_probs):.4f}")
-    logger.info(
-        "\n"
-        + classification_report(y_test, y_preds, target_names=["Human", "AI"])
-    )
+            nodes: list[SemanticASTNode] = []
+            direct_children = [c for c in el.children if isinstance(c, Tag)]
+            if direct_children:
+                branch_counts.append(len(direct_children))
 
-    os.makedirs(os.path.dirname(model_out) or ".", exist_ok=True)
-    joblib.dump(
-        {"model": calibrated_model, "feature_names": list(X.columns)}, model_out
-    )
-    logger.info(f"Откалиброванная модель сохранена в: {model_out}")
+            for child in direct_children[: self.MAX_CHILDREN_PER_NODE]:
+                is_hid, reason, flags, cur_bg = self._check_node_stealth(child, css_rules_map, p_bg)
+                eff_hid = inh_hid or is_hid
+                eff_reason = inh_reason if inh_hid else reason
+
+                zero_font_nodes += flags["zero_font"]
+                low_contrast_nodes += flags["low_contrast"]
+                offscreen_nodes += flags["offscreen"]
+                zero_opacity_nodes += flags["zero_opacity"]
+                display_none_nodes += flags["display_none"]
+
+                child_subtags = [c for c in child.children if isinstance(c, Tag)]
+                has_block_children = any(c.name.lower() in BLOCK_TAGS for c in child_subtags)
+
+                if not has_block_children:
+                    full_node_text = " ".join(t.strip() for t in child.find_all(string=True) if not isinstance(t, Comment) and t.strip())
+                    if full_node_text:
+                        if eff_hid:
+                            hidden_chars += len(full_node_text)
+                            if len(cloaked_snippets) < 5:
+                                cloaked_snippets.append(f"[{eff_reason}] {full_node_text[:100]}")
+                        else:
+                            visible_chars += len(full_node_text)
+                    child_ast = []
+                else:
+                    full_node_text = " ".join(t.strip() for t in child.find_all(string=True, recursive=False) if not isinstance(t, Comment) and t.strip())
+                    if full_node_text:
+                        if eff_hid:
+                            hidden_chars += len(full_node_text)
+                        else:
+                            visible_chars += len(full_node_text)
+                    child_ast = _traverse(child, depth + 1, eff_hid, eff_reason, cur_bg)
+
+                if len(child_ast) == 1 and not full_node_text and not eff_hid:
+                    nodes.extend(child_ast)
+                elif full_node_text or child_ast or eff_hid:
+                    nodes.append(SemanticASTNode(tag=child.name.lower(), text=full_node_text, is_hidden=eff_hid, hide_reason=eff_reason, children=child_ast))
+            return nodes
+
+        root_el = soup.body if soup.body else soup
+        ast_roots = _traverse(root_el, 1, False, "", (255, 255, 255))
+        avg_dom_branching = float(np.mean(branch_counts)) if branch_counts else 0.0
+
+        vis_chunks, hid_chunks = [], []
+        def _collect(nodes: list[SemanticASTNode]):
+            for n in nodes:
+                if n.text:
+                    (hid_chunks if n.is_hidden else vis_chunks).append(n.text)
+                if n.children:
+                    _collect(n.children)
+        _collect(ast_roots)
+
+        visible_text = "\n".join(vis_chunks).strip() or soup.get_text(" ", strip=True)
+        visible_chars = max(visible_chars, len(visible_text))
+        hidden_full_text = "\n".join(hid_chunks).strip()
+
+        zw_matches = len(self._ZW_REGEX.findall(raw_html))
+        zero_width_char_density = (zw_matches * 100.0) / max(1, len(visible_text))
+        clean_visible_text = self._ZW_REGEX.sub("", visible_text)
+
+        homoglyph_spoofs = sum(1 for h in all_hrefs if "xn--" in h)
+        for w in re.findall(r"\b\w{3,}\b", clean_visible_text):
+            if re.search(r"[a-zA-Z]", w) and re.search(r"[а-яА-ЯёЁ]", w):
+                homoglyph_spoofs += 1
+
+        prompt_inj_hits += len(self._PROMPT_INJ_REGEX.findall(hidden_full_text))
+        prompt_inj_hits += len(self._PROMPT_INJ_REGEX.findall(clean_visible_text))
+
+        if ai_spans:
+            self._attach_ai_spans_to_ast(ast_roots, ai_spans)
+
+        p_lengths = [len(p.get_text(strip=True)) for p in soup.find_all(["p", "div"]) if len(p.get_text(strip=True)) > 25]
+        paragraph_length_cv = float(np.std(p_lengths) / (np.mean(p_lengths) + 1e-5)) if len(p_lengths) >= 3 else 0.65
+
+        sents = [len(s.strip()) for s in re.split(r"[.!?]+", clean_visible_text) if len(s.strip()) > 10]
+        sentence_length_cv = float(np.std(sents) / (np.mean(sents) + 1e-5)) if len(sents) >= 3 else 0.60
+
+        li_lengths = [len(li.get_text(strip=True)) for li in soup.find_all("li") if len(li.get_text(strip=True)) > 5]
+        list_length_uniformity = float(1.0 / (1.0 + (np.std(li_lengths) / (np.mean(li_lengths) + 1e-5)))) if len(li_lengths) >= 3 else 0.0
+
+        md_artifacts = len(re.findall(r"(\*\*[^*]+\*\*|##+\s+\w+|```)", clean_visible_text))
+        ai_typo_chars = len(re.findall(r"[—–“”‘’•…]", clean_visible_text))
+        ai_unicode_typo_density = (ai_typo_chars * 100.0) / max(1, len(clean_visible_text))
+        inline_bolds = len(soup.find_all(["strong", "b", "em", "code"]))
+        inline_formatting_density = (inline_bolds * 100.0) / max(1, len(clean_visible_text.split()))
+
+        hidden_text_ratio = hidden_chars / max(1, visible_chars + hidden_chars)
+        text_to_tag_ratio = visible_chars / max(1, len(raw_html))
+
+        features = {
+            "ai_clipboard_markers": float(ai_clip_markers),
+            "ai_css_vars_count": float(ai_css_vars),
+            "markdown_artifact_count": float(md_artifacts),
+            "ai_unicode_typo_density": float(ai_unicode_typo_density),
+            "paragraph_length_cv": float(paragraph_length_cv),
+            "list_length_uniformity": float(list_length_uniformity),
+            "semantic_html5_ratio": float(semantic_html5_ratio),
+            "inline_formatting_density": float(inline_formatting_density),
+            "sentence_length_cv": float(sentence_length_cv),
+            "bullet_list_ratio": float(bullet_list_ratio),
+            "bold_lead_in_count": float(bold_lead_in_count),
+            "code_block_count": float(code_block_count),
+            "mso_conditional_count": float(mso_count),
+            "table_Nesting_depth": float(max_table_depth),
+            "has_table_layout": float(has_table_layout),
+            "legacy_attr_count": float(legacy_attrs),
+            "esp_signature_count": float(esp_sigs),
+            "client_quote_markers": float(client_quotes),
+            "has_unsubscribe_pattern": float(has_unsub),
+            "media_query_count": float(media_query_count),
+            "vml_namespace_count": float(vml_count),
+            "meta_generator_present": float(meta_gen),
+            "reply_forward_markers": float(reply_fwd),
+            "cid_attachment_count": float(cid_count),
+            "max_dom_depth": float(max_dom_depth),
+            "avg_dom_branching": float(avg_dom_branching),
+            "tag_transition_entropy": float(tag_entropy),
+            "tag_diversity_ratio": float(tag_diversity_ratio),
+            "text_to_tag_ratio": float(text_to_tag_ratio),
+            "hidden_text_ratio": float(hidden_text_ratio),
+            "zero_font_nodes": float(zero_font_nodes),
+            "low_contrast_nodes": float(low_contrast_nodes),
+            "offscreen_nodes": float(offscreen_nodes),
+            "zero_opacity_nodes": float(zero_opacity_nodes),
+            "display_none_nodes": float(display_none_nodes),
+            "comment_density": float(comment_density),
+            "deceptive_link_count": float(deceptive_links),
+            "external_link_ratio": float(external_link_ratio),
+            "url_shortener_count": float(shortener_links),
+            "suspicious_uri_count": float(susp_uris),
+            "zero_width_char_density": float(zero_width_char_density),
+            "homoglyph_spoof_count": float(homoglyph_spoofs),
+            "prompt_injection_score": float(prompt_inj_hits),
+            "tracking_pixel_count": float(tracking_pixels),
+            "form_input_count": float(form_input_count),
+            "script_iframe_count": float(script_iframe_count),
+        }
+
+        meta = {"cloaked_snippets": cloaked_snippets, "visible_chars": visible_chars, "hidden_chars": hidden_chars}
+        return features, ast_roots, clean_visible_text, meta
+
+    def _attach_ai_spans_to_ast(self, nodes: list[Any], ai_spans: list[dict]) -> list[Any]:
+        """Supports both list[SemanticASTNode] and serialized list[dict] for SpamAiPipeline."""
+        if not nodes or not ai_spans:
+            return nodes
+        for node in nodes:
+            is_dict = isinstance(node, dict)
+            node_text = node.get("text", "") if is_dict else node.text
+            if node_text:
+                best_conf = 0.0
+                for span in ai_spans:
+                    span_txt = span.get("text", "").strip()
+                    conf = float(span.get("confidence", span.get("score", 0.0)))
+                    if span_txt and (span_txt in node_text or node_text in span_txt):
+                        best_conf = max(best_conf, conf)
+                if is_dict:
+                    node["ai_confidence"] = round(best_conf, 4)
+                else:
+                    node.ai_confidence = best_conf
+            children = node.get("children", []) if is_dict else node.children
+            if children:
+                self._attach_ai_spans_to_ast(children, ai_spans)
+        return nodes
+
+    @staticmethod
+    def score_rule_based_legacy(f: dict[str, float]) -> float:
+        score = 0.0
+        if f["ai_clipboard_markers"] > 0: score += 0.45
+        if f["markdown_artifact_count"] > 0 or f["bold_lead_in_count"] >= 2: score += 0.30
+        if f["hidden_text_ratio"] > 0.05 or f["zero_font_nodes"] > 0 or f["low_contrast_nodes"] > 0: score += 0.40
+        if f["prompt_injection_score"] > 0 or f["zero_width_char_density"] > 0.1 or f["homoglyph_spoof_count"] > 0: score += 0.45
+        if f["ai_unicode_typo_density"] > 0.35: score += 0.25
+        if f["mso_conditional_count"] > 0 or f["has_table_layout"] > 0: score -= 0.20
+        return float(np.clip(score, 0.01, 0.99))
+
+    @staticmethod
+    def get_adaptive_threshold(f: dict[str, float], base_th: float) -> float:
+        hard_ai = (
+            f["prompt_injection_score"] + f["ai_clipboard_markers"]
+            + f["markdown_artifact_count"] + f["ai_css_vars_count"]
+            + f["homoglyph_spoof_count"] + (1.0 if f["zero_width_char_density"] > 0.05 else 0.0)
+        )
+        strong_typo_list = (f["ai_unicode_typo_density"] > 0.35) and (
+            f["list_length_uniformity"] > 0.65 or f["bold_lead_in_count"] >= 2
+        )
+        clean_human_legacy = (
+            (f["mso_conditional_count"] > 0 or f["reply_forward_markers"] > 0 or f["legacy_attr_count"] >= 2)
+            and f["hidden_text_ratio"] < 0.01
+            and f["ai_unicode_typo_density"] < 0.18
+            and hard_ai == 0
+        )
+        if hard_ai > 0 or strong_typo_list:
+            return max(0.30, base_th - 0.16)
+        if clean_human_legacy:
+            return min(0.68, base_th + 0.12)
+        return base_th
+
+    def predict(self, raw_html: str, ai_spans: list[dict] | None = None) -> ForensicResult:
+        features, ast_roots, vis_text, meta = self.extract_features(raw_html, ai_spans)
+        x_vec = np.array([[features[k] for k in self.FEATURE_NAMES]], dtype=np.float32)
+
+        prob = float(self.model.predict_proba(x_vec)[0, 1]) if self.model is not None else self.score_rule_based_legacy(features)
+        eff_th = self.get_adaptive_threshold(features, self.threshold) if self.use_adaptive_threshold else self.threshold
+
+        is_cloaking = bool(
+            features["hidden_text_ratio"] > 0.03
+            or features["zero_font_nodes"] > 0
+            or features["low_contrast_nodes"] > 0
+            or features["offscreen_nodes"] > 0
+            or features["zero_opacity_nodes"] > 0
+        )
+
+        risk_factors = []
+        if features["ai_clipboard_markers"] > 0: risk_factors.append("AI Clipboard Signatures (ChatGPT/Claude/GDocs)")
+        if features["markdown_artifact_count"] > 0: risk_factors.append("Unparsed LLM Markdown Artifacts")
+        if features["bold_lead_in_count"] >= 2: risk_factors.append("LLM Bold Lead-In List Pattern (<li><strong>...)")
+        if is_cloaking: risk_factors.append("DOM Stealth Cloaking / Hidden Text")
+        if features["prompt_injection_score"] > 0: risk_factors.append("Indirect Prompt Injection Attempt")
+        if features["zero_width_char_density"] > 0.05: risk_factors.append("Zero-Width Character Obfuscation")
+        if features["homoglyph_spoof_count"] > 0: risk_factors.append("IDN / Homoglyph Spoofing Detected")
+        if features["deceptive_link_count"] > 0: risk_factors.append("Deceptive Phishing Links (href != text)")
+
+        verdict = "AI_GENERATED_OR_CLOAKED_SPAM" if prob >= eff_th else "HUMAN_LEGITIMATE"
+        return ForensicResult(
+            verdict=verdict,
+            global_risk_score=round(prob, 4),
+            is_cloaking_detected=is_cloaking,
+            top_risk_factors=risk_factors,
+            evidence={
+                "features": {k: round(v, 4) for k, v in features.items()},
+                "cloaked_snippets": meta["cloaked_snippets"],
+                "visible_chars": meta["visible_chars"],
+                "hidden_chars": meta["hidden_chars"],
+                "base_threshold": round(self.threshold, 4),
+                "effective_adaptive_threshold": round(eff_th, 4),
+            },
+            semantic_ast=[n.to_dict() for n in ast_roots],
+            visible_text=vis_text,
+        )
+
+    def evaluate_html_risk(self, html_body: str, ai_spans: list[dict] | None = None) -> dict[str, Any]:
+        """Adapter method for seamless integration with SpamAiPipeline."""
+        res = self.predict(html_body, ai_spans=ai_spans)
+        feats = res.evidence["features"]
+        cloaking_penalty = 0.0
+        if res.is_cloaking_detected:
+            cloaking_penalty = min(
+                0.35,
+                0.15 + 0.5 * feats["hidden_text_ratio"] + 0.05 * (feats["zero_font_nodes"] + feats["low_contrast_nodes"])
+            )
+        return {
+            "verdict": res.verdict,
+            "html_ai_score": res.global_risk_score,
+            "is_cloaking_detected": res.is_cloaking_detected,
+            "cloaking_penalty": round(float(cloaking_penalty), 4),
+            "forensic_flags": res.top_risk_factors,
+            "ast": res.semantic_ast,
+            "visible_text": res.visible_text,
+            "evidence": res.evidence,
+        }
