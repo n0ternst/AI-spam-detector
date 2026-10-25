@@ -1,7 +1,7 @@
 # Email AI Detector (DW-1)
 
 <p align="left">
-  <img src="https://img.shields.io/badge/Python-3.10%2B-blue?style=flat-square&logo=python&logoColor=white" alt="Python" />
+  <img src="https://img.shields.io/badge/Python-3.11%2B-blue?style=flat-square&logo=python&logoColor=white" alt="Python" />
   <img src="https://img.shields.io/badge/PyTorch-2.0%2B-EE4C2C?style=flat-square&logo=pytorch&logoColor=white" alt="PyTorch" />
   <img src="https://img.shields.io/badge/🤗%20Transformers-Qwen2.5--1.5B-yellow?style=flat-square" alt="Transformers" />
   <img src="https://img.shields.io/badge/scikit--learn-HistGB%20%2B%20Isotonic-F7931E?style=flat-square&logo=scikitlearn&logoColor=white" alt="scikit-learn" />
@@ -15,11 +15,11 @@
 
 ## Содержание
 
-* [Архитектура]()
-* [Состав системы]()
-* [Быстрый старт]()
-* [Тесты]()
-* [Логирование]()
+* [Архитектура](#архитектура)
+* [Состав системы](#состав-системы)
+* [Быстрый старт](#быстрый-старт)
+* [Тесты](#тесты)
+* [Логирование](#логирование)
 
 ---
 
@@ -57,28 +57,27 @@
 │  • Взвешенное нелинейное объединение оценок              │  • Локальный расчёт SHAP-вкладов ключевых сигналов
 │  • Формирование вердикта: AI-Generated / Human-Written   │  • Генерация текстового объяснения на русском языке
 └──────────────────────────────────────────────────────────┘
-
 ```
 
 ### Ключевые компоненты
 
-**`parser.py` — `parse_eml**`
+**`parser.py` — `parse_eml`**
 
 Модуль разбора RFC 5322 / MIME-структуры. Реализует каскадный перебор кодировок (`utf-8`, `windows-1251`, `koi8-r`, `iso-8859-5`, `cp866`), рассчитывает метрику расхождения между текстовой и HTML-частью письма (`calculate_jaccard_desync`) для защиты от атак *Multipart Perplexity Dilution*, детектирует расхождение между почтовым клиентом в `X-Mailer` и разметкой тела письма.
 
-**`html_detector.py` — `HTMLDetector**`
+**`html_detector.py` — `HTMLDetector`**
 
 Модуль структурной криминалистики HTML-разметки (46 признаков). Производит вычисление контрастности по WCAG 2.1, деобфускацию стилей CSS, выявление скрытых блоков (`display:none`, `opacity:0`, отрицательные отступы, `font-size: 0px`), символов нулевой ширины и маркеров копирования из интерфейсов генеративных моделей (`Söhne`, `--tw-`, утечки разметки Markdown). Строит `SemanticASTNode` с привязкой текстовых фрагментов.
 
-**`text_detector.py` — `TextDetector**`
+**`text_detector.py` — `TextDetector`**
 
 Модуль глубокого нейросетевого и статистического анализа видимого текста. Выполняет один проход (`Single Forward Pass`) через локальную модель `Qwen/Qwen2.5-1.5B-Instruct` в `bfloat16`, вычисляя аналитические метрики `Log-Rank`, `LRR` и `Fast-DetectGPT Curvature` глобально и по скользящим окнам из 3 предложений. Рассчитывает 9 стилометрических признаков и передаёт 24-мерный вектор в обученные модели `CatBoostClassifier` (`cb_ru.cbm` / `cb_eng.cbm`) с калиброванными порогами.
 
-**`pipeline.py` — `SpamAiPipeline**`
+**`pipeline.py` — `SpamAiPipeline`**
 
 Оркестратор мультимодального анализа и шлюз позднего слияния (Late Fusion). Агрегирует оценки текста и HTML-разметки, рассчитывает локальные вклады признаков (SHAP), формирует финальный вердикт (`AI-Generated` / `Human-Written`), вероятности по смысловым зонам с символьными границами интервала и русскоязычное объяснение для аналитика SOC.
 
-### Особенность работы и режимы
+### Особенности работы и режимы
 
 * **Автоматический выбор устройства (GPU / CPU):** При старте проверяется наличие CUDA. На GPU инференс `Qwen2.5-1.5B-Instruct` выполняется в `torch.bfloat16` (~35–45 мс на письмо). При отсутствии GPU модуль автоматически выполняет переключение на CPU (`torch.float32`).
 * **Двуязычная маршрутизация (`ru` / `eng`):** Язык определяется автоматически по морфологическому составу алфавитов (`detect_language`), подключая соответствующие веса `cb_ru.cbm` (пороги `t_soft=0.558`, `t_strict=0.828`) или `cb_eng.cbm` (пороги `t_soft=0.658`, `t_strict=0.807`).
@@ -104,13 +103,11 @@
 
 ### Требования
 
-* **Интерпретатор:** Python 3.11 или выше[cite: 1, 9, 10]
-* **ОС:** Linux (Ubuntu 22.04+), Windows 10/11, macOS[cite: 1, 9, 10]
+* **Интерпретатор:** Python 3.11 или выше
+* **ОС:** Linux (Ubuntu 22.04+), Windows 10/11, macOS
 * **Оборудование:**
-* *Минимальное (только признаки и бустинг на CPU):* 2 ядра CPU x86-64, 8 ГБ ОЗУ[cite: 1, 10]
-* *Рекомендуемое (полный пайплайн с Qwen-1.5B):* GPU NVIDIA с объёмом видеопамяти от 6 ГБ (RTX 3060/4060, Tesla T4) с поддержкой CUDA 12+
-
-
+  * *Минимальное (только признаки и бустинг на CPU):* 2 ядра CPU x86-64, 8 ГБ ОЗУ
+  * *Рекомендуемое (полный пайплайн с Qwen-1.5B):* GPU NVIDIA с объёмом видеопамяти от 6 ГБ (RTX 3060/4060, Tesla T4) с поддержкой CUDA 12+
 
 ### Конфигурация
 
@@ -118,7 +115,6 @@
 
 ```bash
 cp .env.example .env
-
 ```
 
 Пример содержимого `.env`:
@@ -130,13 +126,12 @@ LLM_API_URL=http://localhost:8000
 LLM_TIMEOUT=180
 # Уровень журналирования (DEBUG, INFO, WARNING, ERROR)
 LOG_LEVEL=INFO
-
 ```
 
 | Переменная | Обязательная | По умолчанию | Описание |
 | --- | --- | --- | --- |
 | `LLM_API_URL` | нет | `http://localhost:8000` | Адрес сервиса модели в контуре разработчика |
-| `LLM_TIMEOUT` | нет | `180` | Таймаут ответа языковой модели по ТЗ[cite: 10, 11] |
+| `LLM_TIMEOUT` | нет | `180` | Таймаут ответа языковой модели по ТЗ |
 | `LOG_LEVEL` | нет | `INFO` | Детализация вывода журналов обработки |
 
 ### Запуск
@@ -162,12 +157,11 @@ python pipeline.py --eml sample_test.eml --output result.json
 
 # 5. Пакетный анализ каталога с письмами
 python pipeline.py --dir /path/to/emails_dir --output results_dir
-
 ```
 
 #### Вариант 2. Запуск в Docker-контейнере
 
-Контейнер собирается с запуском процесса от непривилегированного пользователя (`appuser`) в соответствии с требованиями безопасности ТЗ (проверка Б-2)[cite: 1, 9, 10]:
+Контейнер собирается с запуском процесса от непривилегированного пользователя (`appuser`) в соответствии с требованиями безопасности ТЗ (проверка Б-2):
 
 ```bash
 # Сборка образа
@@ -184,7 +178,6 @@ docker run --rm \
   -v /path/to/emails:/app/input_emails:ro \
   -v $(pwd)/results:/app/results \
   email-ai-detector:latest --dir /app/input_emails --output /app/results
-
 ```
 
 ### Запуск отдельных компонентов
@@ -201,7 +194,6 @@ from html_detector import HTMLDetector
 hd = HTMLDetector()
 html_res = hd.predict("<html><body><p>Контент письма</p></body></html>")
 print(f"Вердикт: {html_res.verdict}, Риск: {html_res.global_risk_score}")
-
 ```
 
 ---
@@ -219,23 +211,22 @@ python -c "from html_detector import HTMLDetector; hd = HTMLDetector(); r = hd.p
 
 # Проверка расчёта расхождения multipart-частей в EML-парсере
 python -c "from parser import calculate_jaccard_desync; assert calculate_jaccard_desync('text body', 'completely different html text') > 0.4; print('Parser Desync: OK')"
-
 ```
 
 ### Вспомогательные скрипты
 
 | Скрипт | Назначение | Когда использовать |
 | --- | --- | --- |
-| `build_llmtrace_dataset.py` | Сборка сбалансированных сплитов Train/Val/Test из LLMTrace | Подготовка обучающих данных без утечки `topic_id`[cite: 10] |
+| `build_llmtrace_dataset.py` | Сборка сбалансированных сплитов Train/Val/Test из LLMTrace | Подготовка обучающих данных без утечки `topic_id` |
 | `extract_features_15b.py` | Одиночный прогон Qwen-1.5B и расчёт 24 признаков | Пересчёт признаков по новому корпусу текстов |
-| `train_eval_15b_cb.py` | Обучение CatBoost и калибровка порогов на Validation | Обучение моделей и расчёт метрик по ТЗ[cite: 10, 11] |
-| `make_presentation_plots.py` | Построение ROC-кривых с 95% ДИ (1000 итераций бутстрепа) | Формирование графических отчётов качества[cite: 6, 10] |
+| `train_eval_15b_cb.py` | Обучение CatBoost и калибровка порогов на Validation | Обучение моделей и расчёт метрик по ТЗ |
+| `make_presentation_plots.py` | Построение ROC-кривых с 95% ДИ (1000 итераций бутстрепа) | Формирование графических отчётов качества |
 
 ---
 
 ## Логирование
 
-Логирование осуществляется через стандартный модуль Python `logging` с выводом структурированных записей в поток `stdout`/`stderr` (согласно п. 4.1.8.2 ТЗ и п. 6.3 ПМИ)[cite: 9, 10].
+Логирование осуществляется через стандартный модуль Python `logging` с выводом структурированных записей в поток `stdout`/`stderr` (согласно п. 4.1.8.2 ТЗ и п. 6.3 ПМИ).
 
 Пример строки журнала:
 
@@ -244,8 +235,7 @@ python -c "from parser import calculate_jaccard_desync; assert calculate_jaccard
 [2026-10-22 01:15:41,250] [INFO] ✓ Конвейер (Qwen2.5-1.5B + CatBoost + HTML Forensics) готов.
 [2026-10-22 01:15:41,310] [INFO] [OK] message_01.eml  | Verdict: AI-Generated  | AI Score: 0.842
 [2026-10-22 01:15:41,365] [WARNING] [SKIP] Поврежденное письмо broken.eml: Отсутствуют заголовки RFC 5322
-
 ```
 
-* **Уровни:** `INFO` (ход обработки, статусы писем, итоговая сводка), `WARNING` (пропуск повреждённых файлов без падения конвейера согласно требованию Н-1 ПМИ[cite: 9]), `ERROR` (критические ошибки инфраструктуры).
+* **Уровни:** `INFO` (ход обработки, статусы писем, итоговая сводка), `WARNING` (пропуск повреждённых файлов без падения конвейера согласно требованию Н-1 ПМИ), `ERROR` (критические ошибки инфраструктуры).
 * **Ротация и хранение:** При работе в Docker-контейнере поток логов перехватывается стандартным драйвером Docker (`json-file`) с поддержкой внешнего сбора.
