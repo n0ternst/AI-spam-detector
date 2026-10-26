@@ -177,16 +177,21 @@ if not logger.handlers:
 
 class SpamAiPipeline:
 
-  def __init__(self, custom_threshold: float | None = None):
+  def __init__(
+      self,
+      custom_threshold: float | None = None,
+      llm_mode: str | None = None,
+      api_url: str | None = None,
+  ):
     logger.info("=" * 65)
     logger.info(
         "ИНИЦИАЛИЗАЦИЯ СИСТЕМЫ ДЕТЕКЦИИ DR.WEB (DW-1: MULTIMODAL LATE FUSION)"
     )
     logger.info("=" * 65)
     self.html_detector = HTMLDetector()
-    self.text_detector = TextDetector()
+    self.text_detector = TextDetector(mode=llm_mode, api_url=api_url)
     self.custom_threshold = custom_threshold
-    logger.info("✓ Конвейер (Qwen2.5-1.5B + CatBoost + HTML Forensics) готов.")
+    logger.info("✓ Конвейер (Qwen2.5-1.5B API + CatBoost + HTML Forensics) готов.")
 
   @staticmethod
   def _attach_ai_spans_to_ast(
@@ -571,6 +576,16 @@ class SpamAiPipeline:
 
     for eml_file in eml_files:
       try:
+
+        out_f = Path(out_dir) / f"{eml_file.name}.json" if out_dir else None
+        # Поддержка возобновления после прерывания (тест Н-2 / А-12 п. 2 ПМИ)
+        if out_f and out_f.exists():
+          with open(out_f, "r", encoding="utf-8") as cached_f:
+            res = json.load(cached_f)
+          results.append(res)
+          logger.info(f"[CACHED] {eml_file.name:<25} | Verdict: {res['verdict']:<14} | AI Score: {res['ai_score']:.3f}")
+          continue
+
         # Внутри process_email сначала парсим и проверяем целостность
         parsed_check = parse_eml(str(eml_file), html_detector=None)
         cleanup_extracted_files(parsed_check)
@@ -667,6 +682,8 @@ def scan_email(eml_path: str) -> dict[str, Any]:
 
 
 def main():
+
+  
   parser = argparse.ArgumentParser(
       description="Dr.Web Email AI Detector (DW-1)"
   )
@@ -687,9 +704,28 @@ def main():
       default=None,
       help="Переопределить порог классификации (0..1)",
   )
+
+  parser.add_argument(
+      "--mode",
+      type=str,
+      choices=["remote", "features", "local"],
+      default=None,
+      help="Режим оценки: remote (API в контуре разработчика), features (только CPU-признаки), local",
+  )
+  parser.add_argument(
+      "--api-url",
+      type=str,
+      default=None,
+      help="Переопределить URL OpenAI-совместимого сервера LLM",
+  )
+
   args = parser.parse_args()
 
-  pipeline = SpamAiPipeline(custom_threshold=args.threshold)
+  pipeline = SpamAiPipeline(
+      custom_threshold=args.threshold,
+      llm_mode=args.mode,
+      api_url=args.api_url,
+  )
 
   if args.eml:
     res = pipeline.process_email(args.eml)
