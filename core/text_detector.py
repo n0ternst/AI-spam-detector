@@ -71,6 +71,35 @@ def detect_language(text: str) -> str:
     latin_count = len(re.findall(r"[a-zA-Z]", text))
     return "ru" if cyrillic_count >= latin_count else "eng"
 
+def sanitize_text_for_nlp(text: str) -> str:
+    """
+    Полностью удаляет URL, email, обрывки HTML/CSS-кода, длинные хэши
+    и схлопывает пробелы перед подачей в стилометрию и Qwen-1.5B.
+    """
+    if not isinstance(text, str) or not text:
+        return ""
+
+    # 1. Вырезаем URL-ссылки (в том числе в угловых/квадратных скобках)
+    cleaned = re.sub(r"<?https?://[^\s<>\"'\]]+>?|www\.[^\s<>\"'\]]+", " ", text, flags=re.I)
+
+    # 2. Вырезаем email-адреса
+    cleaned = re.sub(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b", " ", cleaned)
+
+    # 3. Вырезаем просочившиеся HTML-теги, комментарии и сущности (&nbsp;, &#8203; и т.д.)
+    cleaned = re.sub(r"</?[a-zA-Z][^>]*>|<!\[[^\]]*\]>|&[a-zA-Z0-9#]{2,8};", " ", cleaned)
+
+    # 4. Вырезаем обрывки инлайн-CSS и технических присваиваний (font-size:12px; color:#fff и т.п.)
+    cleaned = re.sub(r"\b[a-z-]{3,20}\s*:\s*[^;,\n]{1,40};", " ", cleaned, flags=re.I)
+
+    # 5. Вырезаем длинные склеенные токены-хэши / base64 / трекинг-параметры (> 35 символов без пробелов)
+    cleaned = re.sub(r"\S{35,}", " ", cleaned)
+
+    # 6. Вырезаем псевдографику и разделители (====, ----, ____, ****)
+    cleaned = re.sub(r"[-=_*#~|]{3,}", " ", cleaned)
+
+    # 7. Нормализуем пробелы (убираем множественные пробелы и табуляции)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned
 
 def extract_stylometric_features(text: str) -> dict[str, float]:
     """Извлечение 9 чистых стилометрических признаков (CPU < 2 мс)."""
@@ -356,41 +385,57 @@ class TextDetector:
             return llm_feats, most_ai_chunk, [char_start, char_end]
 
     def predict(self, text: str, force_lang: str | None = None) -> dict[str, Any]:
-        if not isinstance(text, str) or len(text.strip()) < 15:
-            return {
-                "score": 0.0,
-                "status": "CLEAN",
-                "most_ai_chunk": "",
-                "pred_span_chars": [0, 0],
-                "lang": force_lang or "ru",
-                "features": {},
-            }
+      # Сначала вычищаем из текста все ссылки, разметку и мусорные пробелы
+      clean_nlp_text = sanitize_text_for_nlp(text)
 
-        lang = force_lang or detect_language(text)
-        llm_feats, most_ai_chunk, span_chars = self.extract_llm_features(text)
-        stylo_feats = extract_stylometric_features(text)
-
-        all_feats = {**llm_feats, **stylo_feats}
-        x_vec = np.array(
-            [[all_feats[col] for col in FEATURE_ORDER]], dtype=np.float64
-        )
-
-        prob = float(self.models[lang].predict_proba(x_vec)[0, 1]) if lang in self.models else 0.0
-        t_strict = self.thresholds[lang]["t_strict"]
-        t_soft = self.thresholds[lang]["t_soft"]
-
-        if prob >= t_strict:
-            status = "STRICT_AI"
-        elif prob >= t_soft:
-            status = "SOFT_AI"
-        else:
-            status = "CLEAN"
-
+      if len(clean_nlp_text) < 15:
         return {
-            "score": round(prob, 4),
-            "status": status,
-            "most_ai_chunk": most_ai_chunk,
-            "pred_span_chars": span_chars,
-            "lang": lang,
-            "features": all_feats,
+            "score": 0.0,
+            "status": "CLEAN",
+            "most_ai_chunk": "",
+            "pred_span_chars": [0, 0],
+            "lang": force_lang or "ru",
+            "features": {},
         }
+
+      lang = force_lang or detect_language(clean_nlp_text)
+      llm_feats, most_ai_chunk, span_chars = self.extract_llm_features(clean_nlp_text)
+      stylo_feats = extract_stylometric_features(clean_nlp_text)
+
+      # Привязываем символьные координаты чанка к исходному тексту (если нужно точное совпадение)
+      if most_ai_chunk:
+        most_ai_chunk = " ".join(most_ai_chunk.split())
+        # Ищем начало и конец чанка в исходном text по первым и последним словам
+        words = most_ai_chunk.split()
+        if len(words) >= 3:
+          head_pat = re.escape(words[0]) + r"[\s\S]{1,80}?" + re.escape(words[min(2, len(words)-1)])
+          m_start = re.search(head_pat, text)
+          if m_start:
+            c_start = m_start.start()
+            c_end = min(len(text), c_start + len(most_ai_chunk))
+            span_chars = [int(c_start), int(c_end)]
+
+      all_feats = {**llm_feats, **stylo_feats}
+      x_vec = np.array(
+          [[all_feats[col] for col in FEATURE_ORDER]], dtype=np.float64
+      )
+
+      prob = float(self.models[lang].predict_proba(x_vec)[0, 1]) if lang in self.models else 0.0
+      t_strict = self.thresholds[lang]["t_strict"]
+      t_soft = self.thresholds[lang]["t_soft"]
+
+      if prob >= t_strict:
+        status = "STRICT_AI"
+      elif prob >= t_soft:
+        status = "SOFT_AI"
+      else:
+        status = "CLEAN"
+
+      return {
+          "score": round(prob, 4),
+          "status": status,
+          "most_ai_chunk": most_ai_chunk,
+          "pred_span_chars": span_chars,
+          "lang": lang,
+          "features": all_feats,
+      }

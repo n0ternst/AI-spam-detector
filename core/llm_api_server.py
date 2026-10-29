@@ -160,7 +160,18 @@ def compute_qwen_forensics(text: str) -> tuple[dict[str, float], str, list[int]]
     lrr_w = np.array(lrr_w)
     fd_w = np.array(fd_w)
 
-    best_idx = int(np.argmax(lr_w))
+    # Защита от выбора окна с техническим мусором: требуем минимум 60% буквенных символов в окне
+    valid_mask = []
+    for s, e in win_bounds:
+        c_s = int(offsets[s + 1][0])
+        c_e = int(offsets[min(e, len(offsets) - 1)][1])
+        win_str = text[c_s:c_e]
+        alpha_ratio = len(re.findall(r"[а-яА-ЯёЁa-zA-Z]", win_str)) / max(1, len(win_str.replace(" ", "")))
+        valid_mask.append(alpha_ratio >= 0.60)
+
+    masked_lr_w = np.where(valid_mask, lr_w, -1e9) if any(valid_mask) else lr_w
+    best_idx = int(np.argmax(masked_lr_w))
+
     peak_lr = lr_w[best_idx]
     mean_lr = float(np.mean(lr_w))
     std_lr = float(np.std(lr_w)) if len(lr_w) > 1 else 0.0
