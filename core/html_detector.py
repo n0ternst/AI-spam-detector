@@ -94,20 +94,26 @@ class HTMLDetector:
         self.use_adaptive_threshold = use_adaptive_threshold
 
         if model_path is None:
-            local_dir = os.path.dirname(os.path.abspath(__file__)) if "__file__" in globals() else "."
-            candidate = os.path.join(local_dir, "html_forensic_classifier.joblib")
-            if os.path.exists(candidate):
-                model_path = candidate
-            elif os.path.exists("html_forensic_classifier.joblib"):
-                model_path = "html_forensic_classifier.joblib"
+          local_dir = (
+              os.path.dirname(os.path.abspath(__file__))
+              if "__file__" in globals()
+              else "."
+          )
+          root_dir = os.path.dirname(local_dir)
+          filename = "html_forensic_classifier.joblib"
 
-        if model_path and os.path.exists(model_path):
-            try:
-                bundle = joblib.load(model_path)
-                self.model = bundle.get("model")
-                self.threshold = float(bundle.get("threshold", 0.52))
-            except Exception as e:
-                print(f"[HTMLDetector] Warning: could not load {model_path} ({e}). Using heuristic fallback.")
+          candidates = [
+              os.path.join(root_dir, "weights", filename),
+              os.path.join("weights", filename),
+              os.path.join(local_dir, filename),
+              filename,
+          ]
+          for candidate in candidates:
+            if os.path.exists(candidate):
+              model_path = candidate
+              print("Нашел")
+              break
+
 
     @staticmethod
     def _deobfuscate_css(css_text: str) -> str:

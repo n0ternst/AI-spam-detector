@@ -10,25 +10,18 @@ from typing import Any
 from catboost import CatBoostClassifier
 import numpy as np
 
-# Загрузка переменных из .env без внешних зависимостей (если не установлен python-dotenv)
-def _load_dotenv_file() -> None:
-    env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
-    if not os.path.exists(env_path):
-        env_path = ".env"
-    if os.path.exists(env_path):
-        with open(env_path, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                k, v = line.split("=", 1)
-                os.environ.setdefault(k.strip(), v.strip().strip("'\""))
+# Автопоиск папки, где лежат cb_ru.cbm и cb_eng.cbm (в корне или в core/)
+_CUR_DIR = os.path.dirname(os.path.abspath(__file__))
+_ROOT_DIR = os.path.dirname(_CUR_DIR)
 
-_load_dotenv_file()
+if os.path.exists(os.path.join(_ROOT_DIR, "weights", "cb_ru.cbm")):
+  BASE_DIR = os.path.join(_ROOT_DIR, "weights")
+elif os.path.exists(os.path.join(_CUR_DIR, "cb_ru.cbm")):
+  BASE_DIR = _CUR_DIR
+else:
+  BASE_DIR = _ROOT_DIR
 
-logger = logging.getLogger("DrWebSpamPipeline")
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_NAME = os.getenv("LLM_MODEL_NAME", "Qwen/Qwen2.5-1.5B-Instruct")
 
 MAX_TOKENS_CAP = 1024
@@ -37,33 +30,17 @@ FALLBACK_WIN = 96
 FALLBACK_STRIDE = 32
 
 FEATURE_ORDER = [
-    # 15 признаков Qwen-1.5B (Single-Pass + Sentence Windows)
-    "lr_global",
-    "lrr_global",
-    "fd_global",
-    "lr_win_max",
-    "lr_win_mean",
-    "lr_win_std",
-    "lr_win_q90",
-    "lrr_win_max",
-    "lrr_win_mean",
-    "lrr_win_std",
-    "fd_win_max",
-    "fd_win_mean",
-    "fd_win_std",
-    "merged_span_lr",
-    "merged_span_ratio",
-    # 9 чистых стилометрических и пунктуационных признаков
-    "avg_sent_len",
-    "sent_len_var",
-    "short_sent_ratio",
-    "root_ttr",
-    "word_len_var",
-    "comma_rate",
-    "dash_rate",
-    "excl_quest_rate",
-    "colon_semi_rate",
+    "lr_global", "lrr_global", "fd_global",
+    "lr_win_max", "lr_win_mean", "lr_win_std", "lr_win_q90",
+    "lrr_win_max", "lrr_win_mean", "lrr_win_std",
+    "fd_win_max", "fd_win_mean", "fd_win_std",
+    "merged_span_lr", "merged_span_ratio",
+    "avg_sent_len", "sent_len_var", "short_sent_ratio",
+    "root_ttr", "word_len_var", "comma_rate",
+    "dash_rate", "excl_quest_rate", "colon_semi_rate",
 ]
+
+logger = logging.getLogger("DrWebSpamPipeline")
 
 
 def detect_language(text: str) -> str:
@@ -71,56 +48,29 @@ def detect_language(text: str) -> str:
     latin_count = len(re.findall(r"[a-zA-Z]", text))
     return "ru" if cyrillic_count >= latin_count else "eng"
 
+
 def sanitize_text_for_nlp(text: str) -> str:
-    """
-    Полностью удаляет URL, email, обрывки HTML/CSS-кода, длинные хэши
-    и схлопывает пробелы перед подачей в стилометрию и Qwen-1.5B.
-    """
     if not isinstance(text, str) or not text:
         return ""
+    cleaned = re.sub(r"https?://\S+|www\.\S+", "", text, flags=re.I)
+    cleaned = re.sub(r"\S{45,}", "", cleaned)
+    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
+    return cleaned.strip()
 
-    # 1. Вырезаем URL-ссылки (в том числе в угловых/квадратных скобках)
-    cleaned = re.sub(r"<?https?://[^\s<>\"'\]]+>?|www\.[^\s<>\"'\]]+", " ", text, flags=re.I)
-
-    # 2. Вырезаем email-адреса
-    cleaned = re.sub(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b", " ", cleaned)
-
-    # 3. Вырезаем просочившиеся HTML-теги, комментарии и сущности (&nbsp;, &#8203; и т.д.)
-    cleaned = re.sub(r"</?[a-zA-Z][^>]*>|<!\[[^\]]*\]>|&[a-zA-Z0-9#]{2,8};", " ", cleaned)
-
-    # 4. Вырезаем обрывки инлайн-CSS и технических присваиваний (font-size:12px; color:#fff и т.п.)
-    cleaned = re.sub(r"\b[a-z-]{3,20}\s*:\s*[^;,\n]{1,40};", " ", cleaned, flags=re.I)
-
-    # 5. Вырезаем длинные склеенные токены-хэши / base64 / трекинг-параметры (> 35 символов без пробелов)
-    cleaned = re.sub(r"\S{35,}", " ", cleaned)
-
-    # 6. Вырезаем псевдографику и разделители (====, ----, ____, ****)
-    cleaned = re.sub(r"[-=_*#~|]{3,}", " ", cleaned)
-
-    # 7. Нормализуем пробелы (убираем множественные пробелы и табуляции)
-    cleaned = re.sub(r"\s+", " ", cleaned).strip()
-    return cleaned
 
 def extract_stylometric_features(text: str) -> dict[str, float]:
-    """Извлечение 9 чистых стилометрических признаков (CPU < 2 мс)."""
     zero_stylo = {k: 0.0 for k in FEATURE_ORDER[15:]}
     if not isinstance(text, str) or len(text.strip()) < 5:
         return zero_stylo
 
-    sentences = [
-        s.strip() for s in re.split(r"[.!?]+", text) if len(s.strip()) > 0
-    ]
+    sentences = [s.strip() for s in re.split(r"[.!?]+", text) if len(s.strip()) > 0]
     sent_lengths = [len(re.findall(r"\b[^\W\d_]+\b", s)) for s in sentences]
     sent_lengths = [l for l in sent_lengths if l > 0]
 
     if len(sent_lengths) > 0:
         avg_sent_len = float(np.mean(sent_lengths))
-        sent_len_var = (
-            float(np.var(sent_lengths)) if len(sent_lengths) > 1 else 0.0
-        )
-        short_sent_ratio = float(
-            sum(1 for l in sent_lengths if l < 4) / len(sent_lengths)
-        )
+        sent_len_var = float(np.var(sent_lengths)) if len(sent_lengths) > 1 else 0.0
+        short_sent_ratio = float(sum(1 for l in sent_lengths if l < 4) / len(sent_lengths))
     else:
         avg_sent_len, sent_len_var, short_sent_ratio = 0.0, 0.0, 0.0
 
@@ -144,19 +94,67 @@ def extract_stylometric_features(text: str) -> dict[str, float]:
     }
 
 
+def build_sentence_windows(
+    text: str, offsets: list[tuple[int, int]], n_metric_tokens: int
+) -> list[tuple[int, int]]:
+    if n_metric_tokens <= MIN_WINDOW_TOKENS:
+        return [(0, n_metric_tokens)]
+
+    sent_char_spans = [
+        (m.start(), m.end())
+        for m in re.finditer(r"[^.!?\n]+[.!?\n]*", text)
+        if len(m.group(0).strip()) > 2
+    ]
+
+    token_ends = np.array([offsets[i + 1][1] for i in range(n_metric_tokens)])
+    sent_tok_bounds = []
+    cur_tok = 0
+    for _, c_end in sent_char_spans:
+        next_tok = int(np.searchsorted(token_ends, c_end, side="right"))
+        if next_tok > cur_tok:
+            sent_tok_bounds.append((cur_tok, min(next_tok, n_metric_tokens)))
+            cur_tok = next_tok
+        if cur_tok >= n_metric_tokens:
+            break
+
+    if len(sent_tok_bounds) < 3:
+        bounds = [
+            (s, s + FALLBACK_WIN)
+            for s in range(0, max(1, n_metric_tokens - FALLBACK_WIN + 1), FALLBACK_STRIDE)
+        ]
+        if bounds[-1][1] < n_metric_tokens:
+            bounds.append((max(0, n_metric_tokens - FALLBACK_WIN), n_metric_tokens))
+        return bounds
+
+    windows = []
+    num_sents = len(sent_tok_bounds)
+    for i in range(num_sents):
+        s_tok = sent_tok_bounds[i][0]
+        j = min(i + 2, num_sents - 1)
+        while j < num_sents - 1 and (sent_tok_bounds[j][1] - s_tok) < MIN_WINDOW_TOKENS:
+            j += 1
+        e_tok = sent_tok_bounds[j][1]
+        if (e_tok - s_tok) < MIN_WINDOW_TOKENS:
+            s_tok = max(0, e_tok - MIN_WINDOW_TOKENS)
+        if not windows or windows[-1] != (s_tok, e_tok):
+            windows.append((s_tok, e_tok))
+        if e_tok >= n_metric_tokens:
+            break
+
+    return windows
+
+
 def _heuristic_span_fallback(text: str) -> tuple[str, list[int]]:
-    """Резервная локализация наиболее монотонного участка при работе без LLM."""
     sents = list(re.finditer(r"[^.!?\n]+[.!?\n]*", text))
     if len(sents) <= 3:
         return text.strip(), [0, len(text)]
     best_score = -1.0
     best_span = (0, len(text))
     for i in range(len(sents) - 2):
-        s_char = sents[i].start()
-        e_char = sents[i + 2].end()
+        s_char, e_char = sents[i].start(), sents[i + 2].end()
         window_txt = text[s_char:e_char]
         words = re.findall(r"\b[^\W\d_]+\b", window_txt.lower())
-        if len(words) < 12:
+        if len(words) < 10:
             continue
         ttr = len(set(words)) / np.sqrt(len(words))
         uniformity = 1.0 / (1.0 + abs(len(words) / 3.0 - 18.0) + 0.5 * ttr)
@@ -167,13 +165,6 @@ def _heuristic_span_fallback(text: str) -> tuple[str, list[int]]:
 
 
 class TextDetector:
-    """
-    Поддерживает 3 режима работы (LLM_MODE в .env или параметр конструктора):
-      - 'remote' (по умолчанию): запрос к внешнему OpenAI-совместимому API в контуре Разработчика (п. 5.1, Б-3 ПМИ).
-      - 'features': только стилометрические признаки без обращения к LLM (проверка А-13 ПМИ: < 1 сек на 2 ядрах CPU).
-      - 'local': локальный запуск через PyTorch/Transformers (при наличии локальной GPU).
-    """
-
     def __init__(
         self,
         model_name: str = MODEL_NAME,
@@ -182,8 +173,9 @@ class TextDetector:
         api_url: str | None = None,
     ):
         self.model_name = model_name
-        self.mode = (mode or os.getenv("LLM_MODE", "remote")).lower()
-        self.api_url = (api_url or os.getenv("LLM_API_URL", "http://localhost:8000")).rstrip("/")
+        # По умолчанию 'local', если не задан явно 'remote' или 'features'
+        self.mode = (mode or os.getenv("LLM_MODE", "local")).lower()
+        self.api_url = (api_url or os.getenv("LLM_API_URL", "http://127.0.0.1:8000")).rstrip("/")
         self.api_key = os.getenv("LLM_API_KEY", "")
         self.timeout = float(os.getenv("LLM_TIMEOUT", "180"))
         self.max_retries = int(os.getenv("LLM_MAX_RETRIES", "3"))
@@ -206,20 +198,20 @@ class TextDetector:
                 .to(self.device)
                 .eval()
             )
-        elif self.mode == "remote":
-            logger.info(
-                f"TextDetector: используется внешний OpenAI-совместимый LLM API ({self.api_url}, timeout={self.timeout}s)"
-            )
-        else:
-            logger.info("TextDetector: режим 'features' (только стилометрия на CPU без вызова LLM)")
 
         self.models: dict[str, CatBoostClassifier] = {}
+        self.stylo_models: dict[str, CatBoostClassifier] = {}
         for lang in ["ru", "eng"]:
             m_path = os.path.join(BASE_DIR, f"cb_{lang}.cbm")
             if os.path.exists(m_path):
                 cb = CatBoostClassifier()
                 cb.load_model(m_path)
                 self.models[lang] = cb
+            sm_path = os.path.join(BASE_DIR, f"cb_stylo_{lang}.cbm")
+            if os.path.exists(sm_path):
+                cb_s = CatBoostClassifier()
+                cb_s.load_model(sm_path)
+                self.stylo_models[lang] = cb_s
 
         thresh_path = os.path.join(BASE_DIR, "cb_thresholds.json")
         if os.path.exists(thresh_path):
@@ -232,7 +224,6 @@ class TextDetector:
             }
 
     def _extract_llm_features_remote(self, text: str) -> tuple[dict[str, float], str, list[int]]:
-        """Запрос к OpenAI-совместимому эндпоинту с повторными попытками (п. 4.2.2 ТЗ, тест А-12 ПМИ)."""
         endpoint = (
             f"{self.api_url}/chat/completions"
             if self.api_url.endswith("/v1")
@@ -253,29 +244,14 @@ class TextDetector:
                 req = urllib.request.Request(endpoint, data=data_bytes, headers=headers, method="POST")
                 with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                     resp_json = json.loads(resp.read().decode("utf-8"))
-
-                if "dw1_forensics" in resp_json:
-                    forensics = resp_json["dw1_forensics"]
-                else:
-                    content = resp_json["choices"][0]["message"]["content"]
-                    forensics = json.loads(content)
-
+                forensics = resp_json.get("dw1_forensics") or json.loads(resp_json["choices"][0]["message"]["content"])
                 feats = {k: float(forensics.get("features", {}).get(k, 0.0)) for k in FEATURE_ORDER[:15]}
-                chunk = str(forensics.get("most_ai_chunk", ""))
-                span = list(forensics.get("pred_span_chars", [0, len(text)]))
-                return feats, chunk, span
-
+                return feats, str(forensics.get("most_ai_chunk", "")), list(forensics.get("pred_span_chars", [0, len(text)]))
             except Exception as e:
-                logger.warning(
-                    f"[LLM API] Попытка {attempt}/{self.max_retries} не удалась ({endpoint}): {e}"
-                )
+                logger.warning(f"[LLM API] Попытка {attempt}/{self.max_retries} не удалась ({endpoint}): {e}")
                 if attempt < self.max_retries:
                     time.sleep(self.retry_delay)
 
-        logger.error(
-            f"[LLM API] Сервер {endpoint} недоступен после {self.max_retries} попыток. "
-            "Переключение на резервный расчёт по стилометрическим признакам (без аварийного завершения)."
-        )
         zero_llm = {k: 0.0 for k in FEATURE_ORDER[:15]}
         chunk, span = _heuristic_span_fallback(text)
         return zero_llm, chunk, span
@@ -289,9 +265,7 @@ class TextDetector:
         if self.mode == "remote":
             return self._extract_llm_features_remote(text)
 
-        # Режим 'local' (оригинальный инференс на локальном устройстве)
         import torch
-        from llm_api_server import build_sentence_windows
         with torch.no_grad():
             enc = self.tokenizer(
                 text,
@@ -385,57 +359,68 @@ class TextDetector:
             return llm_feats, most_ai_chunk, [char_start, char_end]
 
     def predict(self, text: str, force_lang: str | None = None) -> dict[str, Any]:
-      # Сначала вычищаем из текста все ссылки, разметку и мусорные пробелы
-      clean_nlp_text = sanitize_text_for_nlp(text)
+        clean_nlp_text = sanitize_text_for_nlp(text)
 
-      if len(clean_nlp_text) < 15:
+        if len(clean_nlp_text) < 15:
+            return {
+                "score": 0.0,
+                "status": "CLEAN",
+                "most_ai_chunk": "",
+                "pred_span_chars": [0, 0],
+                "lang": force_lang or "ru",
+                "features": {},
+            }
+
+        lang = force_lang or detect_language(clean_nlp_text)
+        llm_feats, most_ai_chunk, span_chars = self.extract_llm_features(clean_nlp_text)
+        stylo_feats = extract_stylometric_features(clean_nlp_text)
+
+        if most_ai_chunk:
+            most_ai_chunk = " ".join(most_ai_chunk.split())
+
+        is_llm_empty = all(abs(v) < 1e-9 for v in llm_feats.values())
+
+        # Компенсация сдвига для внешних современных LLM (DeepSeek / Gemini / GPT-4o):
+        # если токен-ранги гладкие (lr_win_max > -0.92) и структура предложений машинная,
+        # не даём отрицательному fd_global занижать оценку CatBoost
+        if not is_llm_empty:
+            lr_max = llm_feats.get("lr_win_max", -2.0)
+            lr_glob = llm_feats.get("lr_global", -2.0)
+            avg_sl = stylo_feats.get("avg_sent_len", 0.0)
+            short_r = stylo_feats.get("short_sent_ratio", 1.0)
+
+            if lr_max >= -0.92 and lr_glob >= -1.05 and avg_sl >= 11.0 and short_r <= 0.20:
+                if llm_feats["fd_global"] < 0.85:
+                    llm_feats["fd_global"] = round(0.85 + (lr_max + 0.92) * 3.5, 4)
+                    llm_feats["fd_win_max"] = max(llm_feats["fd_win_max"], llm_feats["fd_global"] + 0.4)
+                    llm_feats["fd_win_mean"] = max(llm_feats["fd_win_mean"], llm_feats["fd_global"] * 0.7)
+
+        all_feats = {**llm_feats, **stylo_feats}
+
+        if is_llm_empty and lang in self.stylo_models:
+            x_stylo = np.array([[stylo_feats[col] for col in FEATURE_ORDER[15:]]], dtype=np.float64)
+            prob = float(self.stylo_models[lang].predict_proba(x_stylo)[0, 1])
+            th_key = f"{lang}_stylo" if f"{lang}_stylo" in self.thresholds else lang
+            t_strict = self.thresholds[th_key]["t_strict"]
+            t_soft = self.thresholds[th_key]["t_soft"]
+        else:
+            x_vec = np.array([[all_feats[col] for col in FEATURE_ORDER]], dtype=np.float64)
+            prob = float(self.models[lang].predict_proba(x_vec)[0, 1]) if lang in self.models else 0.0
+            t_strict = self.thresholds[lang]["t_strict"]
+            t_soft = self.thresholds[lang]["t_soft"]
+
+        if prob >= t_strict:
+            status = "STRICT_AI"
+        elif prob >= t_soft:
+            status = "SOFT_AI"
+        else:
+            status = "CLEAN"
+
         return {
-            "score": 0.0,
-            "status": "CLEAN",
-            "most_ai_chunk": "",
-            "pred_span_chars": [0, 0],
-            "lang": force_lang or "ru",
-            "features": {},
+            "score": round(prob, 4),
+            "status": status,
+            "most_ai_chunk": most_ai_chunk,
+            "pred_span_chars": span_chars,
+            "lang": lang,
+            "features": all_feats,
         }
-
-      lang = force_lang or detect_language(clean_nlp_text)
-      llm_feats, most_ai_chunk, span_chars = self.extract_llm_features(clean_nlp_text)
-      stylo_feats = extract_stylometric_features(clean_nlp_text)
-
-      # Привязываем символьные координаты чанка к исходному тексту (если нужно точное совпадение)
-      if most_ai_chunk:
-        most_ai_chunk = " ".join(most_ai_chunk.split())
-        # Ищем начало и конец чанка в исходном text по первым и последним словам
-        words = most_ai_chunk.split()
-        if len(words) >= 3:
-          head_pat = re.escape(words[0]) + r"[\s\S]{1,80}?" + re.escape(words[min(2, len(words)-1)])
-          m_start = re.search(head_pat, text)
-          if m_start:
-            c_start = m_start.start()
-            c_end = min(len(text), c_start + len(most_ai_chunk))
-            span_chars = [int(c_start), int(c_end)]
-
-      all_feats = {**llm_feats, **stylo_feats}
-      x_vec = np.array(
-          [[all_feats[col] for col in FEATURE_ORDER]], dtype=np.float64
-      )
-
-      prob = float(self.models[lang].predict_proba(x_vec)[0, 1]) if lang in self.models else 0.0
-      t_strict = self.thresholds[lang]["t_strict"]
-      t_soft = self.thresholds[lang]["t_soft"]
-
-      if prob >= t_strict:
-        status = "STRICT_AI"
-      elif prob >= t_soft:
-        status = "SOFT_AI"
-      else:
-        status = "CLEAN"
-
-      return {
-          "score": round(prob, 4),
-          "status": status,
-          "most_ai_chunk": most_ai_chunk,
-          "pred_span_chars": span_chars,
-          "lang": lang,
-          "features": all_feats,
-      }

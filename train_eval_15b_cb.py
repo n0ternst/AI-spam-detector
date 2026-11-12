@@ -155,6 +155,12 @@ def main():
             f" Precision: {prec:6.2%} | F1: {f1:.3f}"
         )
 
+      #Сохраняем модель чистой стилометрии (9 фичей) <---
+      if exp_name.startswith("2."):
+        stylo_model_path = os.path.join(BASE_DIR, f"cb_stylo_{lang}.cbm")
+        model.save_model(stylo_model_path)
+        thresholds_cfg[f"{lang}_stylo"] = {"t_strict": t_strict, "t_soft": t_soft}
+
       # Сохраняем финальную модель полного ансамбля
       if exp_name.startswith("3."):
         model_path = os.path.join(BASE_DIR, f"cb_{lang}.cbm")

@@ -163,6 +163,8 @@ FEATURE_DESCRIPTIONS_RU = {
     ),
     "word_len_var": "сглаженный разброс длины используемых слов",
     "dash_rate": "характерная частота использования тире и дефисов",
+    "excl_quest_rate": "специфическая частота восклицательных и вопросительных знаков",
+    "colon_semi_rate": "структурная плотность двоеточий и точек с запятой",
 }
 
 logger = logging.getLogger("DrWebSpamPipeline")
@@ -224,14 +226,27 @@ class SpamAiPipeline:
       self, lang: str, feats_dict: dict[str, float], top_k: int = 3
   ) -> list[dict[str, Any]]:
     """Вычисляет локальный вклад признаков (SHAP) для объяснения аналитику SOC (п. 4.1.5.3 ТЗ)."""
-    if lang not in self.text_detector.models or not feats_dict:
+    if not feats_dict:
       return []
     try:
+      llm_cols = FEATURE_ORDER[:15]
+      stylo_cols = FEATURE_ORDER[15:]
+      is_llm_empty = all(abs(feats_dict.get(c, 0.0)) < 1e-9 for c in llm_cols)
+
+      # Если запуск без LLM (режим features или фолбэк) — считаем SHAP по cb_stylo (9 фичей)
+      if is_llm_empty and hasattr(self.text_detector, "stylo_models") and lang in self.text_detector.stylo_models:
+        active_cols = stylo_cols
+        cb_model = self.text_detector.stylo_models[lang]
+      elif lang in self.text_detector.models:
+        active_cols = FEATURE_ORDER
+        cb_model = self.text_detector.models[lang]
+      else:
+        return []
+
       x_vec = np.array(
-          [[feats_dict.get(col, 0.0) for col in FEATURE_ORDER]],
+          [[feats_dict.get(col, 0.0) for col in active_cols]],
           dtype=np.float64,
       )
-      cb_model = self.text_detector.models[lang]
       shap_vals = cb_model.get_feature_importance(
           Pool(x_vec), type="ShapValues"
       )[0][:-1]
@@ -239,8 +254,10 @@ class SpamAiPipeline:
 
       reasons = []
       for i in top_idx:
+        fname = active_cols[i]
+        if is_llm_empty and fname in llm_cols:
+          continue
         if shap_vals[i] > 0:
-          fname = FEATURE_ORDER[i]
           reasons.append({
               "feature": fname,
               "value": round(float(x_vec[0, i]), 4),
@@ -324,9 +341,11 @@ class SpamAiPipeline:
     """Late Fusion: объединение вероятности текстового ядра (Qwen-1.5B + Stylo) и HTML-форензики."""
     p_text = float(text_res.get("score", text_res.get("text_prob", 0.0)))
     lang = text_res.get("lang", "ru")
+    feats_dict = text_res.get("features", {})
+    is_llm_empty = all(abs(feats_dict.get(c, 0.0)) < 1e-9 for c in FEATURE_ORDER[:15])
 
-    # Берем калиброванный порог t_soft (обеспечивающий F1 >= 0.78 и FPR <= 15% по ТЗ)
-    lang_th = self.text_detector.thresholds.get(lang, {})
+    th_key = f"{lang}_stylo" if (is_llm_empty and f"{lang}_stylo" in self.text_detector.thresholds) else lang
+    lang_th = self.text_detector.thresholds.get(th_key, self.text_detector.thresholds.get(lang, {}))
     t_soft = (
         self.custom_threshold
         if self.custom_threshold is not None
