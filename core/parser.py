@@ -196,38 +196,24 @@ def parse_eml(
     if raw_html:
         img_tags_count = len(re.findall(r"<img\b", raw_html, flags=re.I))
         if html_detector is not None:
-            # Используем адаптер evaluate_html_risk (или predict) нашего 46-фичевого HTMLDetector
-            if hasattr(html_detector, "evaluate_html_risk"):
-                html_forensics = html_detector.evaluate_html_risk(raw_html)
-                html_extracted_text = html_forensics.get("visible_text", "")
-                html_features = (
-                    html_forensics.get("evidence", {}).get("features", {})
-                )
-            else:
-                raw_res = html_detector.predict(raw_html)
-                if isinstance(raw_res, dict):
-                    html_forensics = raw_res
-                    html_extracted_text = raw_res.get("visible_text", "")
-                    html_features = raw_res.get(
-                        "features", raw_res.get("evidence", {}).get("features", {})
-                    )
-                else:
-                    html_extracted_text = getattr(raw_res, "visible_text", "")
-                    evidence = getattr(raw_res, "evidence", {}) or {}
-                    html_features = evidence.get("features", {})
-                    html_forensics = {
-                        "verdict": getattr(raw_res, "verdict", "HUMAN_LEGITIMATE"),
-                        "html_ai_score": getattr(raw_res, "global_risk_score", 0.0),
-                        "global_risk_score": getattr(raw_res, "global_risk_score", 0.0),
-                        "is_cloaking_detected": getattr(raw_res, "is_cloaking_detected", False),
-                        "forensic_flags": getattr(raw_res, "top_risk_factors", []),
-                        "top_risk_factors": getattr(raw_res, "top_risk_factors", []),
-                        "evidence": evidence,
-                        "ast": getattr(raw_res, "semantic_ast", []),
-                        "semantic_ast": getattr(raw_res, "semantic_ast", []),
-                        "visible_text": html_extracted_text,
-                        "features": html_features,
-                    }
+            # Вызываем напрямую .predict(), чтобы вернуть объект ForensicResult,
+            # для которого в pipeline.py пропатчены .get() и все 46 фичей
+            html_forensics = html_detector.predict(raw_html)
+            html_extracted_text = (
+                html_forensics.get("visible_text", "")
+                if hasattr(html_forensics, "get")
+                else getattr(html_forensics, "visible_text", "")
+            )
+            evidence = (
+                html_forensics.get("evidence", {})
+                if hasattr(html_forensics, "get")
+                else (getattr(html_forensics, "evidence", {}) or {})
+            )
+            html_features = (
+                html_forensics.get("features", {})
+                if hasattr(html_forensics, "get")
+                else evidence.get("features", {})
+            )
         else:
             try:
                 soup = BeautifulSoup(raw_html, "lxml")

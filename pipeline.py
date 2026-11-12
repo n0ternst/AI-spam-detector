@@ -276,11 +276,28 @@ class SpamAiPipeline:
       desync_score: float = 0.0,
       headers_meta: dict[str, Any] | None = None,
   ) -> tuple[float, float, list[str]]:
-    feats = html_out.get("features", {})
-    reasons = list(html_out.get("top_risk_factors", []))
+    if not isinstance(html_out, dict):
+      html_out = _forensic_to_compat_dict(html_out)
 
-    html_ai_score = float(html_out.get("html_ai_proba", 0.0))
-    threat_risk = float(html_out.get("cloaking_risk_score", 0.0))
+    evidence = html_out.get("evidence", {}) or {}
+    feats = html_out.get("features") or evidence.get("features") or {}
+    reasons = list(
+        html_out.get("top_risk_factors")
+        or html_out.get("forensic_flags")
+        or []
+    )
+
+    html_ai_score = float(
+        html_out.get("html_ai_proba")
+        or html_out.get("html_ai_score")
+        or html_out.get("global_risk_score")
+        or 0.0
+    )
+    threat_risk = float(
+        html_out.get("cloaking_risk_score")
+        or html_out.get("cloaking_penalty")
+        or (0.75 if html_out.get("is_cloaking_detected") else 0.0)
+    )
 
     hidden = feats.get("hidden_elements_count", 0)
     cloaked_ratio = feats.get("cloaked_text_ratio", 0.0)
