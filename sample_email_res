@@ -1,0 +1,88 @@
+{
+  "file_id": "a10e674796658a767a3fb279918da7de14a07906.eml",
+  "file": "a10e674796658a767a3fb279918da7de14a07906.eml",
+  "email_info": {
+    "message_id": "i1oc4oanm306bbgqqn.20250418211214_724462@secontroversial.garden",
+    "subject": "Your service has been restored, 150.00 + Pixel 8 Phone",
+    "lang": "eng",
+    "headers_meta": {
+      "x_mailer": "",
+      "from_domain": "secontroversial.garden",
+      "return_path_domain": "secontroversial.garden",
+      "reply_to_mismatch": false,
+      "has_list_unsubscribe_header": true,
+      "dkim_pass": true,
+      "spf_pass": false,
+      "dmarc_pass": false,
+      "header_layout_mismatch": false
+    }
+  },
+  "subject": "Your service has been restored, 150.00 + Pixel 8 Phone",
+  "ai_score": 0.6632,
+  "risk_score": 0.6632,
+  "verdict": "AI-Generated",
+  "security_status": "SOFT_AI_SUSPICIOUS",
+  "threshold": 0.6582,
+  "method": "hybrid_qwen15b_catboost_late_fusion",
+  "primary_module": "LATE_FUSION_ENSEMBLE",
+  "flagged_zones": [
+    "html_structure"
+  ],
+  "zones": {
+    "body_text": {
+      "ai_probability": 0.5521,
+      "status": "CLEAN",
+      "char_interval": [
+        2534,
+        2741
+      ],
+      "most_ai_chunk": "Please make it transactional and to the point. Due to recent internet outages and dissatisfaction we are now bundling a Google Pixel 8 phone into your Cable/Internet package plus 15O.OO monthly credit on us."
+    },
+    "html_structure": {
+      "ai_probability": 0.6935,
+      "cloaking_risk": 0.0,
+      "is_cloaking_detected": false
+    }
+  },
+  "explanation": "Итоговый индекс AI-генерации: 0.66 (порог: 0.66, вердикт: Сгенерировано ИИ / AI-Generated). Признаки генерации выявлены в зонах: html_structure. Ключевые сигналы модели: специфическое отношение словарного запаса к длине текста (Root-TTR), регулярная плотность расстановки запятых и вводных конструкций, структурная плотность двоеточий и точек с запятой. Наиболее вероятный сгенерированный фрагмент локализован в символьном интервале [2534, 2741].",
+  "key_signals": [
+    {
+      "feature": "root_ttr",
+      "value": 15.2207,
+      "shap_impact": 1.8787,
+      "description_ru": "специфическое отношение словарного запаса к длине текста (Root-TTR)"
+    },
+    {
+      "feature": "comma_rate",
+      "value": 0.0655,
+      "shap_impact": 0.3544,
+      "description_ru": "регулярная плотность расстановки запятых и вводных конструкций"
+    },
+    {
+      "feature": "colon_semi_rate",
+      "value": 0.032,
+      "shap_impact": 0.172,
+      "description_ru": "структурная плотность двоеточий и точек с запятой"
+    }
+  ],
+  "reasons": [
+    "AI_ASSISTED_ORIGIN(score=0.66)"
+  ],
+  "processing_time_sec": 2.662,
+  "details": {
+    "html_threat_risk": 0.0,
+    "html_ai_proba": 0.6935,
+    "text_prob": 0.5521,
+    "lang": "eng",
+    "most_ai_chunk": "Please make it transactional and to the point. Due to recent internet outages and dissatisfaction we are now bundling a Google Pixel 8 phone into your Cable/Internet package plus 15O.OO monthly credit on us.",
+    "pred_span_chars": [
+      2534,
+      2741
+    ],
+    "hidden_css_tags": 0,
+    "cloaked_text_ratio": 0.0,
+    "dummy_links": 0,
+    "desync_score": 0.0,
+    "ast_nodes_count": 0
+  }
+}

@@ -44,7 +44,7 @@ class ForensicResult:
 
 class HTMLDetector:
     """
-    Enterprise HTML Forensic & DOM-Cloaking Detector (46 features).
+    HTML Forensic & DOM-Cloaking Detector (46 features).
     Provides calibrated probabilities, context-adaptive thresholding tau(x),
     WCAG 2.1 contrast analysis, CSS de-obfuscation, and Semantic AST extraction.
     """

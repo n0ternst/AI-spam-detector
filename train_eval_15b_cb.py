@@ -184,59 +184,76 @@ def main():
     json.dump(thresholds_cfg, f, indent=4)
   print(f"\n✓ Модели и пороги сохранены в {BASE_DIR}")
 
-  # 2. Оценка на реальных смешанных текстах из LLMTrace_detection
+  # 2. Оценка на реальных смешанных текстах по методике ПМИ (К-5 и К-6)
   if df_mixed is not None and len(df_mixed) > 0:
     print("\n" + "=" * 90)
     print(
-        "ТЕСТ НА РЕАЛЬНЫХ СМЕШАННЫХ ТЕКСТАХ (LLMTrace_detection,"
-        " label='mixed')"
+        "ТЕСТ НА ЧАСТИЧНО СГЕНЕРИРОВАННЫХ ТЕКСТАХ (ПМИ К-5 и К-6: Mixed vs Human)"
     )
     print("=" * 90)
     for lang in ["ru", "eng"]:
       sub_m = df_mixed[df_mixed["lang"] == lang].copy()
-      if len(sub_m) == 0:
+      sub_h = df_test[(df_test["lang"] == lang) & (df_test["label"] == "human")].copy()
+      if len(sub_m) == 0 or len(sub_h) == 0:
         continue
 
       X_m = sub_m[ALL_FEATURES].fillna(0).values
+      X_h = sub_h[ALL_FEATURES].fillna(0).values
+
       probs_m = models[lang].predict_proba(X_m)[:, 1]
+      probs_h = models[lang].predict_proba(X_h)[:, 1]
+
+      # К-5: ROC-AUC (Mixed = 1 против Human из Test = 0)
+      y_mix_bin = np.concatenate([np.ones(len(probs_m)), np.zeros(len(probs_h))])
+      p_mix_bin = np.concatenate([probs_m, probs_h])
+      mixed_roc_auc = roc_auc_score(y_mix_bin, p_mix_bin)
 
       t_strict = thresholds_cfg[lang]["t_strict"]
       t_soft = thresholds_cfg[lang]["t_soft"]
 
-      strict_caught = int(np.sum(probs_m >= t_strict))
-      soft_caught = int(np.sum(probs_m >= t_soft))
+      print(f"\n[{lang.upper()}] Mixed={len(sub_m)} шт. | Human(Test)={len(sub_h)} шт.")
+      print(f"  [К-5] ROC-AUC (Mixed vs Human)    : {mixed_roc_auc:.4f} (Требование ТЗ: >= 0.70)")
 
+      for mode, th in [("Soft", t_soft), ("Strict", t_strict)]:
+        preds_m = (probs_m >= th).astype(int)
+        preds_h = (probs_h >= th).astype(int)
+        tp = int(np.sum(preds_m == 1))
+        fn = int(np.sum(preds_m == 0))
+        fp = int(np.sum(preds_h == 1))
+        tn = int(np.sum(preds_h == 0))
+
+        rec = tp / max(tp + fn, 1)
+        fpr = fp / max(fp + tn, 1)
+        prec = tp / max(tp + fp, 1)
+        f1_doc = (2 * tp) / max(2 * tp + fp + fn, 1)
+        print(
+            f"  {mode:<6} (T={th:.3f}) -> Recall: {rec:6.2%} | FPR: {fpr:5.2%} |"
+            f" Precision: {prec:6.2%} | F1: {f1_doc:.3f}"
+        )
+
+      # К-6: Локализация фрагментов (F1 по символам)
+      char_f1_all = []
+      char_f1_detected = []
       any_hit = 0
-      strong_hit = 0
-      recalls = []
-
-      for _, row in sub_m.iterrows():
+      for idx_r, (_, row) in enumerate(sub_m.iterrows()):
         p_span = row.get("pred_span_chars", [0, 0])
         gt_ints = row.get("ai_char_intervals", [])
-        prec, rec = compute_char_overlap(p_span, gt_ints)
-        if prec > 0.0:
+        prec_c, rec_c = compute_char_overlap(p_span, gt_ints)
+        f1_c = (2 * prec_c * rec_c / (prec_c + rec_c)) if (prec_c + rec_c) > 0 else 0.0
+        char_f1_all.append(f1_c)
+        if prec_c > 0:
           any_hit += 1
-        if prec >= 0.30 or rec >= 0.50:
-          strong_hit += 1
-        recalls.append(rec)
+        # Если письмо прошло мягкий порог детекции
+        if probs_m[idx_r] >= t_soft:
+          char_f1_detected.append(f1_c)
 
-      n = len(sub_m)
-      print(f"\n[{lang.upper()}] Всего смешанных текстов: {n}")
       print(
-          f"  Глобальный отлов Strict (Block)  : {strict_caught}/{n}"
-          f" ({strict_caught/n:.1%})"
+          f"  [К-6] Попадание в AI-спан (>0)    : {any_hit}/{len(sub_m)} ({any_hit/len(sub_m):.1%})"
       )
       print(
-          f"  Глобальный отлов Soft   (Warning): {soft_caught}/{n}"
-          f" ({soft_caught/n:.1%})"
-      )
-      print(
-          f"  Касание AI-интервала (Overlap>0) : {any_hit}/{n} ({any_hit/n:.1%})"
-      )
-      print(
-          "  Точная локализация спана         :"
-          f" {strong_hit}/{n} ({strong_hit/n:.1%}) | Средний Recall спана:"
-          f" {np.mean(recalls):.1%}"
+          f"  [К-6] Средний F1 по символам (все): {np.mean(char_f1_all):.3f} |"
+          f" На пойманных (Soft): {np.mean(char_f1_detected) if char_f1_detected else 0.0:.3f}"
+          " (Требование ТЗ: >= 0.60)"
       )
 
 

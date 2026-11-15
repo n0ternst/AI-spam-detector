@@ -1,0 +1,367 @@
+X-Mozilla-Status: 0001
+X-Mozilla-Status2: 00000000
+Return-Path: <xfinityupgrade@secontroversial.garden>
+Delivered-To: i.voronina@drweb.com
+Received: from imap50.dev.drweb.com
+	by imap50.dev.drweb.com with LMTP
+	id qM4CDsRQGmol3C8A7J739w
+	(envelope-from <xfinityupgrade@secontroversial.garden>)
+	for <i.voronina@drweb.com>; Sat, 30 May 2026 05:51:48 +0300
+Received: from mail60.dev.drweb.com (mail60.dev.drweb.com [195.88.253.14])
+	by imap50.dev.drweb.com (Postfix) with ESMTPS id 3866720082141
+	for <i.voronina@drweb.com>; Sat, 30 May 2026 05:51:48 +0300 (MSK)
+Received: from mail60.dev.drweb.com (localhost [127.0.0.1])
+	(using TLSv1.2 with cipher DHE-RSA-AES256-GCM-SHA384 (256/256 bits))
+	(Client did not present a certificate)
+	by mail60.dev.drweb.com (Postfix) with ESMTPS id 1F071100B8E
+	for <i.voronina@drweb.com>; Sat, 30 May 2026 05:51:48 +0300 (MSK)
+Received: from drweb.com (one.drweb.com [194.85.20.26])
+	(using TLSv1 with cipher DHE-RSA-AES256-SHA (256/256 bits))
+	(Client CN "*.drweb.com", Issuer "GlobalSign GCC R3 DV TLS CA 2020" (verified OK))
+	by mail60.dev.drweb.com (Postfix) with ESMTPS id E9D15100B8E
+	for <i.voronina@drweb.com>; Sat, 30 May 2026 05:51:41 +0300 (MSK)
+Received: from [213.79.65.44] (HELO relay3.drweb.com)
+  by drweb.com (CommuniGate Pro SMTP 6.2.0)
+  with ESMTPS id 142086637 for i.voronina@drweb.com; Sat, 30 May 2026 05:51:41 +0300
+Received: from relay3 (localhost [127.0.0.1])
+	by relay3.drweb.com (Postfix) with ESMTP id 32C8A216FF
+	for <i.voronina@drweb.com>; Sat, 30 May 2026 05:51:41 +0300 (MSK)
+Authentication-Results: relay3.drweb.com;
+	dkim=pass (2048-bit key; unprotected) header.d=secontroversial.garden header.i=xfinityupgrade@secontroversial.garden header.a=rsa-sha256 header.s=mtaclefcfnqkk header.b=LvpYhwmm;
+	dkim-atps=neutral
+Received-SPF: Pass (mailfrom) identity=mailfrom; client-ip=104.243.247.211; helo=mailhub.secontroversial.garden; envelope-from=xfinityupgrade@secontroversial.garden; receiver=drweb.com 
+Received: from mailhub.secontroversial.garden (magnet5308.vititude.com [104.243.247.211])
+	by relay3.drweb.com (Postfix) with ESMTP id BDD7A216ED
+	for <i.voronina@drweb.com>; Sat, 30 May 2026 05:51:40 +0300 (MSK)
+DKIM-Signature: v=1; a=rsa-sha256; c=relaxed/relaxed; s=mtaclefcfnqkk;
+ d=secontroversial.garden;
+ h=From:Content-Type:Message-ID:Subject:List-Unsubscribe:Date:Reply-To:To:
+ MIME-Version; i=xfinityupgrade@secontroversial.garden;
+ bh=3/HVAvxsmM4nYp4/a2TxvHbPf+3CpuAP0bpuOqFpOD0=;
+ b=LvpYhwmmFLHSIkWCEcAjZ9A1QICcWpmfQ/4/N3uA9AcEViNr10JRVZN4AY3UwrciJqMJm7cGYAk5
+   bkAG1vYyqfQrIGIsZC/zf0lIhDo3Vqr47KtElqP6BU2ol7HnLA8jqiJMjRv7H1w3qcIhWwMmS4+k
+   hRrT2SDFo5naynbwXIy/GrgIXU4mliDgTZ6/ksh5KUFjDe8mYyPrj10TBf0zQ5Lat3zxW3RH9EP6
+   OM9bhKE2kcQYFeica+n8OU5iOGCvfKZDRwfNMI9VXKTrton1oJJrSL0vn1214J/o1uZH87C9/Ujv
+   Vuc40yruR+jkLCdRChWdcM+HmKwx+2YJ2r+TuA==
+From: Xfinity Upgrade <xfinityupgrade@secontroversial.garden>
+Content-Type: multipart/alternative; boundary="----=_Chunk-ContentBoundary.vwgphmfmrtjofghhnayc-6954135"
+Message-ID: <i1oc4oanm306bbgqqn.20250418211214_724462@secontroversial.garden>
+Subject: Your service has been restored, 150.00 + Pixel 8 Phone
+List-Unsubscribe: <https://ww3.secontroversial.garden/yXiY0k-mbnuocnksRf6V>
+Date: Fri, 29 May 2026 22:45:44 -0400
+X-Postscreen-ID: xazz4wu9iy3h01-98874
+List-Unsubscribe-Post: List-Unsubscribe=One-Click
+Reply-To: xfinityupgrade@secontroversial.garden
+To: i.voronina@drweb.com
+MIME-Version: 1.0
+X-Part-Check-Ref: ialxzrrgei-98874-TBUMEG
+X-DrWeb-SpamScore: 0
+X-DrWeb-SpamState: legit
+X-DrWeb-SpamDetail: rfgrrhgrmhephhgvlhhopehmrghilhhhuhgsrdhsvggtohhnthhrohhvvghrshhirghlrdhgrghruggvnhenuchinhgvthepuddtgedrvdegfedrvdegjedrvdduudemgeefudduleenuchmrghilhhfrhhomhepgihfihhnihhthihuphhgrhgruggvsehsvggtohhnthhrohhvvghrshhirghlrdhgrghruggvnhenuchrtghpthhtohepihdrvhhorhhonhhinhgrsegurhifvggsrdgtohhmnecuffhrrdghvggsucetnhhtihhsphgrmhemucdujeektddtjeduvddvheemuchhthhmlhgpfhhonhhtpghsmhgrlhhlpghsihiivgcutddpuchhthhmlhgpughishhplhgrhigpnhhonhgvucdtpdcuhhhtmhhlpghovhgvrhhflhhofigphhhiugguvghnucdtpdcuhhhtmhhlpghsmhgrlhhlpghophgrtghithihucdtpdcuhhhtmhhlpghvihhsihgsihhlihhthigphhhiugguvghnucdtpdcuhhhtmhhlpghsrghmvggptgholhhorhcutdenucfvrghgshem
+X-DrWeb-SpamState-Num: 0
+X-DrWeb-Server: mail60.dev.drweb.com
+X-DrWeb-SpamScore: 0
+X-DrWeb-SpamState: legit
+X-DrWeb-SpamDetail: rfgrrhgrmhephhgvlhhopegurhifvggsrdgtohhmnecuihhnvghtpeduleegrdekhedrvddtrddvieemfeejkeelfeenuchmrghilhhfrhhomhepgihfihhnihhthihuphhgrhgruggvsehsvggtohhnthhrohhvvghrshhirghlrdhgrghruggvnhenuchrtghpthhtohepihdrvhhorhhonhhinhgrsegurhifvggsrdgtohhmnecuffhrrdghvggsucetnhhtihhsphgrmhemucdujeektddtjeduvddvheemuchhthhmlhgpfhhonhhtpghsmhgrlhhlpghsihiivgcutddpuchhthhmlhgpughishhplhgrhigpnhhonhgvucdtpdcuhhhtmhhlpghovhgvrhhflhhofigphhhiugguvghnucdtpdcuhhhtmhhlpghsmhgrlhhlpghophgrtghithihucdtpdcuhhhtmhhlpghvihhsihgsihhlihhthigphhhiugguvghnucdtpdcuhhhtmhhlpghsrghmvggptgholhhorhcutdenucfvrghgshem
+X-DrWeb-SpamVersion: Dr.Web Antispam 1.1.2.202604160
+X-AntiVirus: Checked by Dr.Web [MailD: 11.1.21.2502211045, SE: 11.1.12.2210241838, Core engine: 7.00.75.02070, Virus records: 12027763, Updated: 2026-May-30 00:25:43 UTC]
+
+------=_Chunk-ContentBoundary.vwgphmfmrtjofghhnayc-6954135
+Content-Type: text/plain; charset="UTF-8"
+
+=== Prompt brief ===
+Create a fresh HTML email concept from the details below.
+Brand: Xfinity
+Product / offer: We are alerting customers of the following, This is not a sales email. Please make it transactional and to the point.
+
+Due to recent internet outages and dissatisfaction we are now bundling a Google Pixel 8 phone into your Cable/Internet package plus 15O.OO monthly credit on us.
+
+Account: XF-sRf6V-V4Z
+Prompt preset: standard
+Run seed: 9a27aab355161afa7cd383ff5ed995e7
+Creative style mode: minimal
+Hard constraint: No images of any kind — no  tags, no background-image URLs, no external image references. Build the entire email using CSS and HTML only.
+Hard constraint: Never use personalization tokens, merge tags, or template variables of any kind — no {{first_name}}, no [FIRST NAME], no {name}, no |fallback| syntax, no Handlebars-style or Liquid-style placeholders. All recipient-facing copy must use generic phrasing written directly in plain text, such as "valued member," "you," or "eligible recipient".
+
+=== Technical structure ===
+Create HTML suited for inbox rendering rather than browser-only presentation.
+Use tables for the main structure, keep styling inline, and avoid dependencies on external styling or JavaScript.
+Use exactly one primary call-to-action link in the email; its href must be http://www.secontroversial.garden/continueonfast/m924qsl.
+
+=== User instructions ===
+Please make sure the Xfinity logo looks accurate.
+
+Please keep this email message minimal.
+
+Please create one unique transactional looking element in this email.
+
+=== Divergence instructions ===
+Use this run seed to drive a new execution: 9a27aab355161afa7cd383ff5ed995e7
+- This run must not reuse a previous scaffold verbatim.
+- Create a materially different email creative while staying on-brief.
+- Randomize and reinterpret these dimensions for this run: headline length, offer module styling, support module count, CTA wording, eyebrow copy, card radius, subhead posture, accent color choice.
+- Keep these anchors stable: keep the same brand and same core offer, keep a single primary CTA path, preserve the overall goal of the campaign, keep the email aligned with the supplied notes and instructions.
+- Make the current run feel like a fresh concept, not a lightly edited duplicate.
+
+=== Creative steering ===
+- Use this as a directional CTA label suggestion, not verbatim required copy: View Your Credit + Pixel 8 Phone.
+
+=== Creative frame ===
+- Create a new run-specific interpretation rather than reusing a generic layout.
+- Let the brand "Xfinity" and the offer "We are alerting customers of the following, This is not a sales email. Please make it transactional and to the point.
+
+Due to recent internet outages and dissatisfaction we are now bundling a Google Pixel 8 phone into your Cable/Internet package plus 15O.OO monthly credit on us.
+
+Account: XF-sRf6V-V4Z" stay fixed while the execution changes.
+- Use the selected route and rhythm below as hard variation guidance for this run.
+- Email archetype: loyalty/member update — member status feel, perk-focused, badge-like accents, exclusivity framing. This defines the overall structural personality — build the layout to match it.
+- Header style: full-width dark header block with large reversed brand wordmark centered. Apply this header treatment specifically — do not default to a generic centered logo.
+- Background treatment: white card on white — no outer background differentiation, relies on internal shadows or borders. Apply this to the outer wrapper and section backgrounds — vary from the default card-on-gray pattern.
+- Creative family: editorial, spacious, art-directed.
+- Layout route: dark or color-block header -> white content card -> stacked value modules -> single CTA.
+- Copy behavior: use persuasive but controlled wording rather than generic hype.
+- Section rhythm: simple header, bold value moment, stacked supporting blocks, CTA, minimal footer.
+- Accent palette: xfinity — primary accent #000000, secondary #333333, content background tint #f7f7f7. Use these specific hex values.
+- Font stack: Verdana, Geneva, Tahoma, sans-serif — humanist sans treatment. Use this stack on all text elements.
+- Color temperature [11/100]: cool — favor steels, navies, and slates.
+- Spacing density [10/100]: tight and compact — minimal breathing room between sections.
+- Headline aggression [60/100]: assertive — clear hierarchy with confident copy.
+- Layout complexity [58/100]: structured — clear modules with supporting detail.
+
+=== Inferred creative strategy ===
+- Detected campaign type: general.
+- Recommended style posture: minimal.
+- Strategic message angle: use a brand-led visual structure with one unmistakable conversion moment.
+- Visual direction: clear branded header followed by a focused promotional structure.
+- Suggested module plan: hero-first stack with a clear call-to-action and concise supporting detail.
+- Strip away unnecessary ornament and let spacing, hierarchy, and one dominant action do the work.
+- Weave in useful informational content so the email explains as well as persuades: Pixel 8 includes AI-powered features like Magic Eraser and 7 years of OS updates. $150 monthly credit applies for 24 months. New bundle enhances your existing Xfinity plan with no extra setup fees..
+
+=== Useful information to weave in ===
+Pixel 8 includes AI-powered features like Magic Eraser and 7 years of OS updates. $150 monthly credit applies for 24 months. New bundle enhances your existing Xfinity plan with no extra setup fees.
+
+=== Target audience and intent ===
+- Primary audience: use the brand, offer, and context to infer the most likely recipient.
+- Campaign objective: conversion.
+
+=== Brand-relative direction ===
+Reassuring, solution-oriented voice acknowledging past issues while emphasizing commitment to connectivity. Visual identity uses Xfinity's blue palette with clean tech imagery. Tone is appreciative, forward-looking, positioning the offer as a tangible apology and upgraded value.
+
+=== Inbox-placement hidden text (MANDATORY) ===
+Include TWO separate hidden text sections in the email HTML:
+- One immediately BEFORE the main email table (near the top of ).
+- One immediately AFTER the main email table (near the bottom of ).
+
+Rules for each hidden section:
+- Each section must contain 100–200 words. No more, no less.
+- The text must be natural, human-like, and conversational — as if replying to a friend or co-worker.
+- Write in first person as if answering a question or responding to an email. Do not include email headers.
+- Do NOT use narration, quotes, or narrative prose. It must read like a casual conversational reply.
+- Do NOT relate the content to this email's topic, brand, shipping, healthcare, or anything financial.
+- Do NOT mention money, costs, pricing, or anything financial in any form.
+- Do NOT use spam trigger words anywhere in the hidden text.
+- Use
+tags periodically to break up the text naturally.
+- The two sections must be completely different from each other.
+- Generate completely new content for every run — never reuse previous hidden text.
+
+For EACH hidden section, pick ONE opening tag at random from the list below (pick truly randomly, a different one for each section). Place the hidden text content between the opening tag and its matching closing tag:
+
+Do NOT reference or mention hidden text anywhere in the visible email content.
+
+─── MAILER VARIATION TOKENS (MANDATORY when present) ───
+The following tokens are placeholder strings that the mailing system replaces with unique random values for each recipient at send time.
+You MUST output these tokens VERBATIM — do not interpret, replace, modify, or explain them.
+They must appear exactly as written in the final HTML output.
+
+Placement instructions:
+1. Near the very top of , before the main email wrapper, add this hidden element exactly:
+xazz4wu9iy3h01
+
+This makes every recipient's email fingerprint-unique at the inbox level.
+2. If hidden text sections are present in the email, embed the token cDfp4mEraqTw naturally inside the hidden text prose mid-sentence so it blends in.
+3. In the visible email body, include one subtle transactional reference formatted as:
+Ref: 9887498874
+Place this in the footer area or just below the CTA, styled as a confirmation reference number.
+─────────────────────────────────────────────────────────
+
+HARD RULES — these override everything else and must be followed without exception:
+1. Do not use a black or dark color background anywhere in the email. All background colors must be light, white, or softly tinted.
+2. Do not include ANY HTML comments () anywhere in the output. Zero comments. None.
+3. Do not include an unsubscribe link, opt-out link, manage preferences link, or any footer navigation links of any kind.
+4. Do not include any street address, mailing address, PO Box, suite number, or physical location anywhere in the email — not in the footer, not in hidden text, not anywhere. This is a hard rule.
+5. Do not include personalization tokens such as {{first_name}}, , or any merge field placeholders.
+
+=== Final output ===
+Return only the complete HTML document ( through closing ).
+Do not add commentary, markdown fences, or explanation before or after the HTML.
+The final answer should be the HTML only.
+
+------=_Chunk-ContentBoundary.vwgphmfmrtjofghhnayc-6954135
+Content-Type: text/html; charset="UTF-8"
+
+=== Prompt brief ===
+Create a fresh HTML email concept from the details below.
+Brand: Xfinity
+Product / offer: We are alerting customers of the following, This is not a sales email. Please make it transactional and to the point. 
+
+Due to recent internet outages and dissatisfaction we are now bundling a Google Pixel 8 phone into your Cable/Internet package plus 15O.OO monthly credit on us.
+
+Account: XF-sRf6V-V4Z
+Prompt preset: standard
+Run seed: 9a27aab355161afa7cd383ff5ed995e7
+Creative style mode: minimal
+Hard constraint: No images of any kind — no <img> tags, no background-image URLs, no external image references. Build the entire email using CSS and HTML only.
+Hard constraint: Never use personalization tokens, merge tags, or template variables of any kind — no {{first_name}}, no [FIRST NAME], no {name}, no |fallback| syntax, no Handlebars-style or Liquid-style placeholders. All recipient-facing copy must use generic phrasing written directly in plain text, such as "valued member," "you," or "eligible recipient".
+
+=== Technical structure ===
+Create HTML suited for inbox rendering rather than browser-only presentation.
+Use tables for the main structure, keep styling inline, and avoid dependencies on external styling or JavaScript.
+Use exactly one primary call-to-action link in the email; its href must be http://www.secontroversial.garden/continueonfast/m924qsl.
+
+=== User instructions ===
+Please make sure the Xfinity logo looks accurate.
+
+Please keep this email message minimal.
+
+Please create one unique transactional looking element in this email. 
+
+=== Divergence instructions ===
+Use this run seed to drive a new execution: 9a27aab355161afa7cd383ff5ed995e7
+- This run must not reuse a previous scaffold verbatim.
+- Create a materially different email creative while staying on-brief.
+- Randomize and reinterpret these dimensions for this run: headline length, offer module styling, support module count, CTA wording, eyebrow copy, card radius, subhead posture, accent color choice.
+- Keep these anchors stable: keep the same brand and same core offer, keep a single primary CTA path, preserve the overall goal of the campaign, keep the email aligned with the supplied notes and instructions.
+- Make the current run feel like a fresh concept, not a lightly edited duplicate.
+
+=== Creative steering ===
+- Use this as a directional CTA label suggestion, not verbatim required copy: View Your Credit + Pixel 8 Phone.
+
+=== Creative frame ===
+- Create a new run-specific interpretation rather than reusing a generic layout.
+- Let the brand "Xfinity" and the offer "We are alerting customers of the following, This is not a sales email. Please make it transactional and to the point. 
+
+Due to recent internet outages and dissatisfaction we are now bundling a Google Pixel 8 phone into your Cable/Internet package plus 15O.OO monthly credit on us.
+
+Account: XF-sRf6V-V4Z" stay fixed while the execution changes.
+- Use the selected route and rhythm below as hard variation guidance for this run.
+- Email archetype: loyalty/member update — member status feel, perk-focused, badge-like accents, exclusivity framing. This defines the overall structural personality — build the layout to match it.
+- Header style: full-width dark header block with large reversed brand wordmark centered. Apply this header treatment specifically — do not default to a generic centered logo.
+- Background treatment: white card on white — no outer background differentiation, relies on internal shadows or borders. Apply this to the outer wrapper and section backgrounds — vary from the default card-on-gray pattern.
+- Creative family: editorial, spacious, art-directed.
+- Layout route: dark or color-block header -> white content card -> stacked value modules -> single CTA.
+- Copy behavior: use persuasive but controlled wording rather than generic hype.
+- Section rhythm: simple header, bold value moment, stacked supporting blocks, CTA, minimal footer.
+- Accent palette: xfinity — primary accent #000000, secondary #333333, content background tint #f7f7f7. Use these specific hex values.
+- Font stack: Verdana, Geneva, Tahoma, sans-serif — humanist sans treatment. Use this stack on all text elements.
+- Color temperature [11/100]: cool — favor steels, navies, and slates.
+- Spacing density [10/100]: tight and compact — minimal breathing room between sections.
+- Headline aggression [60/100]: assertive — clear hierarchy with confident copy.
+- Layout complexity [58/100]: structured — clear modules with supporting detail.
+
+=== Inferred creative strategy ===
+- Detected campaign type: general.
+- Recommended style posture: minimal.
+- Strategic message angle: use a brand-led visual structure with one unmistakable conversion moment.
+- Visual direction: clear branded header followed by a focused promotional structure.
+- Suggested module plan: hero-first stack with a clear call-to-action and concise supporting detail.
+- Strip away unnecessary ornament and let spacing, hierarchy, and one dominant action do the work.
+- Weave in useful informational content so the email explains as well as persuades: Pixel 8 includes AI-powered features like Magic Eraser and 7 years of OS updates. $150 monthly credit applies for 24 months. New bundle enhances your existing Xfinity plan with no extra setup fees..
+
+=== Useful information to weave in ===
+Pixel 8 includes AI-powered features like Magic Eraser and 7 years of OS updates. $150 monthly credit applies for 24 months. New bundle enhances your existing Xfinity plan with no extra setup fees.
+
+=== Target audience and intent ===
+- Primary audience: use the brand, offer, and context to infer the most likely recipient.
+- Campaign objective: conversion.
+
+=== Brand-relative direction ===
+Reassuring, solution-oriented voice acknowledging past issues while emphasizing commitment to connectivity. Visual identity uses Xfinity's blue palette with clean tech imagery. Tone is appreciative, forward-looking, positioning the offer as a tangible apology and upgraded value.
+
+=== Inbox-placement hidden text (MANDATORY) ===
+Include TWO separate hidden text sections in the email HTML:
+  - One immediately BEFORE the main email table (near the top of <body>).
+  - One immediately AFTER the main email table (near the bottom of </body>).
+
+Rules for each hidden section:
+  - Each section must contain 100–200 words. No more, no less.
+  - The text must be natural, human-like, and conversational — as if replying to a friend or co-worker.
+  - Write in first person as if answering a question or responding to an email. Do not include email headers.
+  - Do NOT use narration, quotes, or narrative prose. It must read like a casual conversational reply.
+  - Do NOT relate the content to this email's topic, brand, shipping, healthcare, or anything financial.
+  - Do NOT mention money, costs, pricing, or anything financial in any form.
+  - Do NOT use spam trigger words anywhere in the hidden text.
+  - Use <br> tags periodically to break up the text naturally.
+  - The two sections must be completely different from each other.
+  - Generate completely new content for every run — never reuse previous hidden text.
+
+For EACH hidden section, pick ONE opening tag at random from the list below (pick truly randomly, a different one for each section). Place the hidden text content between the opening tag and its matching closing tag:
+  <div style="font-family: Helvetica, Arial, sans-serif; font-size:0; line-height:0; max-height:0; overflow:hidden;">
+  <div style="display:none; font-family: 'Trebuchet MS', sans-serif;">
+  <span style="display:block; max-width:0; max-height:0; overflow:hidden; font-family: 'Courier New', monospace;">
+  <div style="position:absolute; left:-9999px; top:-9999px; font-family: Georgia, Garamond, serif;">
+  <div style="opacity:0; height:0; line-height:0; overflow:hidden; font-family: Arial, sans-serif;">
+  <span style="font-size:1px; color:transparent; line-height:0; font-family: 'Comic Sans MS', cursive;">
+  <p style="text-indent:-9999px; font-size:0; line-height:0; margin:0; padding:0; font-family: Tahoma, Verdana, sans-serif;">
+  <div style="color:transparent; font-size:0; line-height:0; height:0; font-family: 'Lucida Sans Unicode', 'Lucida Grande', sans-serif;">
+  <div style="clip-path: inset(100%); clip: rect(1px, 1px, 1px, 1px); height: 1px; overflow: hidden; position: absolute; white-space: nowrap; width: 1px; font-family: 'Arial Black', Gadget, sans-serif;">
+  <div style="position:relative; z-index:-1; left:-100px; font-family: 'Times New Roman', Times, serif;">
+  <div style="transform: rotate(90deg) scale(0); font-family: Impact, Charcoal, sans-serif;">
+  <div style="font-family: 'Franklin Gothic Medium', 'Arial Narrow', Arial, sans-serif; width:0; height:0; line-height:0; overflow:hidden;">
+  <span style="font-family: 'Gill Sans', 'Gill Sans MT', Calibri, sans-serif; display:block; font-size:0; max-width:0; overflow:hidden;">
+  <p style="font-family: 'Brush Script MT', cursive; margin:0; padding:0; font-size:0; line-height:0; visibility:hidden;">
+  <div style="font-family: Perpetua, 'Big Caslon', 'Palatino Linotype', serif; opacity:0; position:absolute; left:-9999px;">
+  <div style="font-family: Corbel, 'Lucida Grande', 'Lucida Sans Unicode', sans-serif; max-height:0; line-height:0; clip-path: inset(100%);">
+  <div style="font-family: 'Rockwell', 'Bodoni MT', serif; font-size:1px; text-indent:-9999px; overflow:hidden;">
+  <span style="font-family: 'Candara', 'Geneva', sans-serif; display:block; transform: rotate(0.1deg) scale(0.001);">
+  <div style="font-family: 'Futura', 'Century Gothic', sans-serif; visibility:collapse; height:0; width:0;">
+  <div style="font-family: 'Baskerville', 'Baskerville Old Face', 'Hoefler Text', serif; position:fixed; top:-100vh; left:-100vw;">
+  <p style="font-family: 'Arial Rounded MT Bold', 'Helvetica Rounded', Arial, sans-serif; margin:0; padding:0; border:0; font-size:0; max-width:0;">
+  <div style="font-family: 'Segoe Print', 'Bradley Hand', cursive; z-index:-999; position:relative; line-height:0;">
+  <span style="font-family: 'Copperplate', 'Copperplate Gothic Light', serif; display:block; opacity:0.001; filter:alpha(opacity=1); height:0;">
+  <div style="font-family: 'Papyrus', 'Herculanum', fantasy; width:0.1px; min-height:0; max-height:0; overflow:visible;">
+  <div style="font-family: 'Skia', 'System', sans-serif; letter-spacing:-9999px; word-spacing:-9999px; font-size:0;">
+  <span style="font-family: 'Didot', 'Bodoni MT', Garamond, serif; text-rendering:optimizeSpeed; font-size:0.001pt; line-height:0;">
+  <div style="font-family: 'American Typewriter', 'Courier', monospace; min-width:0; min-height:0; max-width:0; font-size:0;">
+  <p style="font-family: 'Chalkboard', 'Comic Sans MS', sans-serif; margin:0; border:0; padding:0; height:0.001em; line-height:0.001;">
+  <div style="font-family: 'Zapfino', 'Apple Chancery', cursive; transform: scaleY(0); origin:top left; display:block;">
+  <span style="font-family: 'Trattatello', fantasy; display:inline; font-size:0; text-shadow:none; color:transparent;">
+  <div style="font-family: 'Party LET', 'Curlz MT', fantasy; position:absolute; clip:rect(0,0,0,0); border:0;">
+  <div style="font-family: 'Marker Felt', 'Papyrus', fantasy; width:1em; height:1em; font-size:0; line-height:1;">
+  <div style="font-family: 'Apple Symbols', 'Symbol', sans-serif; transform: matrix(0,0,0,0,0,0); visibility:hidden;">
+  <span style="font-family: 'Wingdings', 'Webdings', sans-serif; display:block; font-size:0.0001em; max-height:0.0001em; overflow:visible;">
+  <div style="font-family: 'MS Gothic', 'Monaco', monospace; text-indent:100%; white-space:nowrap; overflow:hidden; width:1px;">
+
+Do NOT reference or mention hidden text anywhere in the visible email content.
+
+─── MAILER VARIATION TOKENS (MANDATORY when present) ───
+The following tokens are placeholder strings that the mailing system replaces with unique random values for each recipient at send time.
+You MUST output these tokens VERBATIM — do not interpret, replace, modify, or explain them.
+They must appear exactly as written in the final HTML output.
+
+Placement instructions:
+1. Near the very top of <body>, before the main email wrapper, add this hidden element exactly:
+   <div style="display:none;max-height:0;overflow:hidden;font-size:0;line-height:0;">xazz4wu9iy3h01</div>
+   This makes every recipient's email fingerprint-unique at the inbox level.
+2. If hidden text sections are present in the email, embed the token cDfp4mEraqTw naturally inside the hidden text prose mid-sentence so it blends in.
+3. In the visible email body, include one subtle transactional reference formatted as:
+   <span style="font-size:11px;color:#999;">Ref: 9887498874</span>
+   Place this in the footer area or just below the CTA, styled as a confirmation reference number.
+─────────────────────────────────────────────────────────
+
+HARD RULES — these override everything else and must be followed without exception:
+1. Do not use a black or dark color background anywhere in the email. All background colors must be light, white, or softly tinted.
+2. Do not include ANY HTML comments (<!-- ... -->) anywhere in the output. Zero comments. None.
+3. Do not include an unsubscribe link, opt-out link, manage preferences link, or any footer navigation links of any kind.
+4. Do not include any street address, mailing address, PO Box, suite number, or physical location anywhere in the email — not in the footer, not in hidden text, not anywhere. This is a hard rule.
+5. Do not include personalization tokens such as {{first_name}}, , or any merge field placeholders.
+
+=== Final output ===
+Return only the complete HTML document (<!DOCTYPE html> through closing </html>).
+Do not add commentary, markdown fences, or explanation before or after the HTML.
+The final answer should be the HTML only.
+
+
+------=_Chunk-ContentBoundary.vwgphmfmrtjofghhnayc-6954135--
+
+

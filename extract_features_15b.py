@@ -292,7 +292,7 @@ def process_split(extractor: Qwen15BFeatureExtractor, in_file: str, out_file: st
 
 if __name__ == "__main__":
     extractor = Qwen15BFeatureExtractor()
-    for split in ["mixed_test"]: #"train", "val", "test", 
+    for split in ["train", "val", "test", "mixed_test"]: 
         in_p = os.path.join(BASE_DIR, f"raw_{split}.jsonl")
         out_p = os.path.join(BASE_DIR, f"features_15b_{split}.jsonl")
         process_split(extractor, in_p, out_p)
