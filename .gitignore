@@ -469,3 +469,11 @@ catboost_info/
 demo_dir/
 demo_emails/
 scripts/
+samples_prompt/
+prompts_results/
+prompts_results_with_llm/
+samples_gray/
+samples_spam/
+spam_results/
+gray_results/
+gray_results_with_llm/

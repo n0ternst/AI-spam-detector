@@ -111,8 +111,15 @@ class HTMLDetector:
           for candidate in candidates:
             if os.path.exists(candidate):
               model_path = candidate
-              print("Нашел")
               break
+
+        if model_path and os.path.exists(model_path):
+          loaded = joblib.load(model_path)
+          if isinstance(loaded, dict):
+            self.model = loaded.get("model", loaded.get("classifier"))
+            self.threshold = float(loaded.get("threshold", self.threshold))
+          else:
+            self.model = loaded
 
 
     @staticmethod

@@ -7,7 +7,7 @@ import torch
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-BASE_DIR = r"C:\Users\Bogdan\Documents\AI-spam-detector"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_NAME = "Qwen/Qwen2.5-1.5B-Instruct"
 
 MAX_TOKENS_CAP = 1024
@@ -210,19 +210,28 @@ class Qwen15BFeatureExtractor:
         left_idx = best_idx
         while left_idx > 0 and lr_w[left_idx - 1] >= expand_thresh:
             left_idx -= 1
-
         right_idx = best_idx
         while right_idx < len(win_bounds) - 1 and lr_w[right_idx + 1] >= expand_thresh:
             right_idx += 1
 
-        span_tok_s = win_bounds[left_idx][0]
-        span_tok_e = win_bounds[right_idx][1]
-
+        span_tok_s, span_tok_e = win_bounds[left_idx][0], win_bounds[right_idx][1]
         merged_span_lr = -float(np.mean(lr_np[span_tok_s:span_tok_e]))
         merged_span_ratio = float((span_tok_e - span_tok_s) / max(n_tok, 1))
 
-        char_start = int(offsets[span_tok_s + 1][0])
+        # s_tok + 1 — это первый токен внутри нашего окна (так как метрики сдвинуты на 1 токен из-за labels = ids[1:])
+        char_start = int(offsets[min(span_tok_s + 1, len(offsets) - 1)][0])
         char_end = int(offsets[min(span_tok_e, len(offsets) - 1)][1])
+
+        # Дотягиваем влево до начала текущего предложения или абзаца
+        while char_start > 0 and text[char_start - 1] not in ".!?\n":
+            char_start -= 1
+        # Убираем ведущие пробелы/кавычки после точки предыдущего предложения
+        while char_start < char_end and text[char_start] in " \t\n\"«'":
+            char_start += 1
+
+        # Дотягиваем вправо до конца текущего предложения или абзаца
+        while char_end < len(text) and text[char_end - 1] not in ".!?\n" and text[char_end] not in "\n":
+            char_end += 1
 
         return {
             "lr_global": lr_global,
@@ -283,7 +292,7 @@ def process_split(extractor: Qwen15BFeatureExtractor, in_file: str, out_file: st
 
 if __name__ == "__main__":
     extractor = Qwen15BFeatureExtractor()
-    for split in ["train", "val", "test", "mixed_test"]:
+    for split in ["mixed_test"]: #"train", "val", "test", 
         in_p = os.path.join(BASE_DIR, f"raw_{split}.jsonl")
         out_p = os.path.join(BASE_DIR, f"features_15b_{split}.jsonl")
         process_split(extractor, in_p, out_p)

@@ -1,0 +1,7 @@
+-r requirements.txt
+torch>=2.1.0
+transformers>=4.45.0
+accelerate>=0.34.0
+fastapi>=0.115.0
+uvicorn>=0.30.0
+datasets>=3.0.0

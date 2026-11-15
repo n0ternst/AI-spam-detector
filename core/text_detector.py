@@ -25,7 +25,7 @@ else:
 MODEL_NAME = os.getenv("LLM_MODEL_NAME", "Qwen/Qwen2.5-1.5B-Instruct")
 
 MAX_TOKENS_CAP = 1024
-MIN_WINDOW_TOKENS = 48
+MIN_WINDOW_TOKENS = 32
 FALLBACK_WIN = 96
 FALLBACK_STRIDE = 32
 
@@ -50,11 +50,23 @@ def detect_language(text: str) -> str:
 
 
 def sanitize_text_for_nlp(text: str) -> str:
+    """Удаляет URL, email, телефоны и длинные хэши, сохраняя абзацы \\n."""
     if not isinstance(text, str) or not text:
         return ""
-    cleaned = re.sub(r"https?://\S+|www\.\S+", "", text, flags=re.I)
-    cleaned = re.sub(r"\S{45,}", "", cleaned)
-    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
+    # 1. URL-ссылки и домены
+    cleaned = re.sub(r"<?https?://\S+>?|www\.\S+", " ", text, flags=re.I)
+    # 2. Email-адреса
+    cleaned = re.sub(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b", " ", cleaned)
+    # 3. Номера телефонов (+7 (999) 123-45-67, 8-800-555-35-35 и т.д.)
+    cleaned = re.sub(r"(?:\+?\d[\d\-\(\) ]{7,}\d)", " ", cleaned)
+    # 4. Длинные технические токены/хэши (> 40 символов без пробелов) и разделители
+    cleaned = re.sub(r"\S{40,}", " ", cleaned)
+    cleaned = re.sub(r"[-=_*#~|]{3,}", " ", cleaned)
+    # 5. Сохраняем границы абзацев (\n\n), но убираем одиночные переносы строк внутри предложений
+    cleaned = re.sub(r"[ \t]+", " ", cleaned)
+    cleaned = re.sub(r" *\n *", "\n", cleaned)
+    cleaned = re.sub(r"(?<!\n)\n(?!\n)", " ", cleaned)
+    cleaned = re.sub(r"\n{2,}", "\n", cleaned)
     return cleaned.strip()
 
 
@@ -322,6 +334,7 @@ class TextDetector:
             peak_lr = lr_w[best_idx]
             mean_lr = float(np.mean(lr_w))
             std_lr = float(np.std(lr_w)) if len(lr_w) > 1 else 0.0
+
             expand_thresh = max(mean_lr + 0.5 * std_lr, peak_lr - 0.12)
 
             left_idx = best_idx
@@ -335,8 +348,21 @@ class TextDetector:
             merged_span_lr = -float(np.mean(lr_np[span_tok_s:span_tok_e]))
             merged_span_ratio = float((span_tok_e - span_tok_s) / max(n_tok, 1))
 
-            char_start = int(offsets[span_tok_s + 1][0])
+            # s_tok + 1 — это первый токен внутри нашего окна (так как метрики сдвинуты на 1 токен из-за labels = ids[1:])
+            char_start = int(offsets[min(span_tok_s + 1, len(offsets) - 1)][0])
             char_end = int(offsets[min(span_tok_e, len(offsets) - 1)][1])
+
+            # Дотягиваем влево до начала текущего предложения или абзаца
+            while char_start > 0 and text[char_start - 1] not in ".!?\n":
+                char_start -= 1
+            # Убираем ведущие пробелы/кавычки после точки предыдущего предложения
+            while char_start < char_end and text[char_start] in " \t\n\"«'":
+                char_start += 1
+
+            # Дотягиваем вправо до конца текущего предложения или абзаца
+            while char_end < len(text) and text[char_end - 1] not in ".!?\n" and text[char_end] not in "\n":
+                char_end += 1
+
             most_ai_chunk = text[char_start:char_end].strip()
 
             llm_feats = {
@@ -379,21 +405,6 @@ class TextDetector:
             most_ai_chunk = " ".join(most_ai_chunk.split())
 
         is_llm_empty = all(abs(v) < 1e-9 for v in llm_feats.values())
-
-        # Компенсация сдвига для внешних современных LLM (DeepSeek / Gemini / GPT-4o):
-        # если токен-ранги гладкие (lr_win_max > -0.92) и структура предложений машинная,
-        # не даём отрицательному fd_global занижать оценку CatBoost
-        if not is_llm_empty:
-            lr_max = llm_feats.get("lr_win_max", -2.0)
-            lr_glob = llm_feats.get("lr_global", -2.0)
-            avg_sl = stylo_feats.get("avg_sent_len", 0.0)
-            short_r = stylo_feats.get("short_sent_ratio", 1.0)
-
-            if lr_max >= -0.92 and lr_glob >= -1.05 and avg_sl >= 11.0 and short_r <= 0.20:
-                if llm_feats["fd_global"] < 0.85:
-                    llm_feats["fd_global"] = round(0.85 + (lr_max + 0.92) * 3.5, 4)
-                    llm_feats["fd_win_max"] = max(llm_feats["fd_win_max"], llm_feats["fd_global"] + 0.4)
-                    llm_feats["fd_win_mean"] = max(llm_feats["fd_win_mean"], llm_feats["fd_global"] * 0.7)
 
         all_feats = {**llm_feats, **stylo_feats}
 

@@ -3,8 +3,7 @@ import random
 import pandas as pd
 from datasets import load_dataset
 
-BASE_DIR = r"C:\Users\Bogdan\Documents\AI-spam-detector"
-
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CLASSIFICATION_DS = "iitolstykh/LLMTrace_classification"
 DETECTION_DS = "iitolstykh/LLMTrace_detection"
 

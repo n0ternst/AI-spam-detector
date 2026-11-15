@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 from sklearn.metrics import confusion_matrix, f1_score, roc_auc_score, roc_curve
 
-BASE_DIR = r"C:\Users\Bogdan\Documents\AI-spam-detector"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 TRAIN_PATH = os.path.join(BASE_DIR, "features_15b_train.jsonl")
 VAL_PATH = os.path.join(BASE_DIR, "features_15b_val.jsonl")

@@ -6,9 +6,14 @@ from pathlib import Path
 import re
 import time
 from typing import Any
-
 from catboost import Pool
 import numpy as np
+
+try:
+  from dotenv import load_dotenv
+  load_dotenv()
+except ImportError:
+  pass
 
 # Импорт парсера и детекторов (поддержка запуска и из корня, и из пакета core)
 try:
@@ -370,19 +375,24 @@ class SpamAiPipeline:
     )
     t_strict = float(lang_th.get("t_strict", 0.81))
 
-    # Расчет итогового индекса AI-генерации (Late Fusion с настраиваемыми весами п. 4.1.3.4 ТЗ)
-    if not has_html or html_ai_score <= 0.02:
+  # Расчет итогового индекса AI-генерации (Late Fusion п. 4.1.3.4 ТЗ):
+    # Базовым сигналом всегда выступает текст (p_text), чтобы верстка легитимных
+    # корпоративных рассылок (samples_gray) не вызывала ложных срабатываний.
+    if not has_html or html_ai_score <= 0.05:
       ai_index = p_text
       primary_mod = "TEXT_QWEN15B_CATBOOST"
+    elif p_text < 0.38:
+      # Если текст уверенно человеческий, HTML не может поднять скор выше порога
+      ai_index = 0.85 * p_text + 0.15 * min(html_ai_score, 0.50)
+      primary_mod = "TEXT_QWEN15B_CATBOOST"
     else:
-      linear_comb = 0.72 * p_text + 0.28 * html_ai_score
-      max_comb = max(p_text, 0.88 * html_ai_score)
-      ai_index = 0.65 * max_comb + 0.35 * linear_comb
-      if p_text >= 0.50 and html_ai_score >= 0.55:
-        ai_index = min(1.0, ai_index + 0.12)
+      # В зоне неопределенности или высокого p_text включаем ансамбль с HTML
+      ai_index = 0.78 * p_text + 0.22 * html_ai_score
+      if p_text >= 0.50 and html_ai_score >= 0.60:
+        ai_index = min(1.0, ai_index + 0.08)
       primary_mod = (
           "LATE_FUSION_ENSEMBLE"
-          if html_ai_score > 0.45
+          if html_ai_score > 0.50
           else "TEXT_QWEN15B_CATBOOST"
       )
 
@@ -520,7 +530,7 @@ class SpamAiPipeline:
                   ),
                   "status": text_out.get("status", "CLEAN"),
                   "char_interval": span_chars,
-                  "most_ai_chunk": most_ai_chunk[:250],
+                  "most_ai_chunk": most_ai_chunk,
               },
               "html_structure": {
                   "ai_probability": html_ai_score,
@@ -539,13 +549,13 @@ class SpamAiPipeline:
               "html_ai_proba": html_ai_score,
               "text_prob": round(float(text_out.get("score", 0.0)), 4),
               "lang": text_out.get("lang", "ru"),
-              "most_ai_chunk": most_ai_chunk[:160],
+              "most_ai_chunk": most_ai_chunk,
               "pred_span_chars": span_chars,
               "hidden_css_tags": html_feats.get("hidden_elements_count", 0),
               "cloaked_text_ratio": html_feats.get("cloaked_text_ratio", 0.0),
               "dummy_links": html_feats.get("dummy_link_count", 0),
               "desync_score": desync_score,
-              "ast_tree": ast_list,
+              "ast_nodes_count": len(ast_list) if isinstance(ast_list, list) else 1,
           },
       }
     finally:
@@ -597,6 +607,7 @@ class SpamAiPipeline:
       self, dir_path: str, out_dir: str | None = None
   ) -> dict[str, Any]:
     """Пакетный анализ каталога писем (поддерживает и .eml, и файлы-хэши без расширения; тест Ф-2, Н-1 ПМИ)."""
+    t_dir_start = time.perf_counter()
     root = Path(dir_path)
     # Сначала ищем все подходящие файлы (включая хэши без .eml)
     eml_files = sorted(p for p in root.rglob("*") if self._is_valid_email_candidate(p))
@@ -643,6 +654,11 @@ class SpamAiPipeline:
         )
         errors.append({"file": eml_file.name, "error": str(e)})
 
+    total_dir_sec = round(time.perf_counter() - t_dir_start, 2)
+    proc_times = [r.get("processing_time_sec", 0.0) for r in results if "processing_time_sec" in r]
+    avg_time_sec = round(float(np.mean(proc_times)), 4) if proc_times else 0.0
+    median_time_sec = round(float(np.median(proc_times)), 4) if proc_times else 0.0
+
     ai_count = sum(1 for r in results if r["verdict"] == "AI-Generated")
     summary = {
         "total_found": len(eml_files),
@@ -650,9 +666,16 @@ class SpamAiPipeline:
         "skipped_corrupted": len(errors),
         "ai_generated_count": ai_count,
         "human_written_count": len(results) - ai_count,
+        "total_directory_time_sec": total_dir_sec,
+        "avg_time_per_email_sec": avg_time_sec,
+        "median_time_per_email_sec": median_time_sec,
         "errors": errors,
         "results": results,
     }
+    logger.info(
+        f"✓ ИТОГО ПО ДИРЕКТОРИИ: обработано {len(results)}/{len(eml_files)} писем за {total_dir_sec:.2f} сек "
+        f"(среднее: {avg_time_sec:.3f} с/письмо, медиана: {median_time_sec:.3f} с/письмо)"
+    )
     if out_dir:
       sum_path = Path(out_dir) / "summary.json"
       with open(sum_path, "w", encoding="utf-8") as f:

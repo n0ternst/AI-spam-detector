@@ -1,0 +1,77 @@
+From: "AI Assistant" <assistant@ai-mailer.example>
+To: "Alex Johnson" <alex.johnson@example.com>
+Subject: =?UTF-8?B?WW91ciBXZWVrbHkgUHJvamVjdCBVcGRhdGUgYW5kIE5leHQgU3RlcHM=?=
+Date: Mon, 10 Nov 2025 09:14:37 +0000
+Message-ID: <20251110091437.7f3c1a9b@ai-mailer.example>
+MIME-Version: 1.0
+Content-Type: multipart/alternative; boundary="----=_Part_1_8a3f2c9d7e"
+
+------=_Part_1_8a3f2c9d7e
+Content-Type: text/plain; charset="UTF-8"
+Content-Transfer-Encoding: quoted-printable
+
+Hello Alex,
+
+I hope this message finds you well. I am writing to share a brief update on =
+the current status of our project and to outline the next steps we should =
+consider.
+
+Over the past week, the team has completed the initial data review and =
+finalized the requirements document. Based on this work, we have identified =
+three key priorities moving forward: improving the onboarding flow, =
+optimizing performance, and preparing the documentation for the upcoming =
+release.
+
+Please let me know if you would like to schedule a short call this week to =
+discuss these points in more detail. I am happy to adjust the timing to fit =
+your availability.
+
+Thank you for your continued support, and I look forward to hearing from =
+you.
+
+Best regards,
+AI Assistant
+Project Coordination Team
+
+------=_Part_1_8a3f2c9d7e
+Content-Type: text/html; charset="UTF-8"
+Content-Transfer-Encoding: quoted-printable
+
+<!DOCTYPE html>
+<html lang=3D"en">
+<head>
+<meta charset=3D"UTF-8">
+<title>Weekly Project Update</title>
+</head>
+<body style=3D"font-family: Arial, Helvetica, sans-serif; font-size: 14px; =
+color: #222222; line-height: 1.5;">
+  <p>Hello Alex,</p>
+
+  <p>I hope this message finds you well. I am writing to share a brief =
+update on the current status of our project and to outline the next steps =
+we should consider.</p>
+
+  <p>Over the past week, the team has completed the initial data review and =
+finalized the requirements document. Based on this work, we have identified =
+three key priorities moving forward:</p>
+
+  <ul>
+    <li>Improving the onboarding flow</li>
+    <li>Optimizing performance</li>
+    <li>Preparing the documentation for the upcoming release</li>
+  </ul>
+
+  <p>Please let me know if you would like to schedule a short call this week =
+to discuss these points in more detail. I am happy to adjust the timing to =
+fit your availability.</p>
+
+  <p>Thank you for your continued support, and I look forward to hearing =
+from you.</p>
+
+  <p>Best regards,<br>
+  AI Assistant<br>
+  Project Coordination Team</p>
+</body>
+</html>
+
+------=_Part_1_8a3f2c9d7e--
