@@ -11,7 +11,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_NAME = "Qwen/Qwen2.5-1.5B-Instruct"
 
 MAX_TOKENS_CAP = 1024
-MIN_WINDOW_TOKENS = 48   # Защита от шума: окно не может быть короче ~48 токенов
+MIN_WINDOW_TOKENS = 32   # Защита от шума: окно не может быть короче ~32 токенов
 FALLBACK_WIN = 96        # Если в тексте нет точек/абзацев
 FALLBACK_STRIDE = 32
 
@@ -61,7 +61,7 @@ def build_sentence_windows(
 ) -> list[tuple[int, int]]:
     """
     Строит окна по 3 предложениям со сдвигом в 1 предложение.
-    Если 3 предложения короче MIN_WINDOW_TOKENS (48 токенов), захватывает следующие,
+    Если 3 предложения короче MIN_WINDOW_TOKENS (32 токена), захватывает следующие,
     чтобы детектор никогда не шумел на коротких обрывках.
     """
     if n_metric_tokens <= MIN_WINDOW_TOKENS:
@@ -97,7 +97,7 @@ def build_sentence_windows(
             bounds.append((max(0, n_metric_tokens - FALLBACK_WIN), n_metric_tokens))
         return bounds
 
-    # Собираем окна: минимум 3 предложения И минимум MIN_WINDOW_TOKENS (48 токенов)
+    # Собираем окна: минимум 3 предложения И минимум MIN_WINDOW_TOKENS (32 токена)
     windows = []
     num_sents = len(sent_tok_bounds)
     for i in range(num_sents):

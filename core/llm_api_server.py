@@ -13,12 +13,13 @@ from pydantic import BaseModel
 import numpy as np
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
+import threading
 
 MODEL_NAME = os.getenv("LLM_MODEL_NAME", "Qwen/Qwen2.5-1.5B-Instruct")
 API_KEY = os.getenv("LLM_API_KEY", "")  # Если задан в .env, проверяет Bearer токен
 
 MAX_TOKENS_CAP = 1024
-MIN_WINDOW_TOKENS = 48
+MIN_WINDOW_TOKENS = 32
 FALLBACK_WIN = 96
 FALLBACK_STRIDE = 32
 
@@ -41,6 +42,7 @@ if tokenizer.pad_token is None:
     tokenizer.pad_token = tokenizer.eos_token
 
 model = AutoModelForCausalLM.from_pretrained(MODEL_NAME, torch_dtype=dtype).to(device).eval()
+_gpu_lock = threading.Lock()
 print("[LLM-Server] Модель готова к приёму запросов.")
 
 
@@ -119,7 +121,8 @@ def compute_qwen_forensics(text: str) -> tuple[dict[str, float], str, list[int]]
         return zero_llm, text, [0, len(text)]
 
     ids_tensor = torch.tensor([input_ids], device=device)
-    logits = model(ids_tensor).logits[0, :-1, :].float()
+    with _gpu_lock:
+        logits = model(ids_tensor).logits[0, :-1, :].float()
     labels = ids_tensor[0, 1:]
 
     log_probs = torch.log_softmax(logits, dim=-1)
@@ -144,34 +147,18 @@ def compute_qwen_forensics(text: str) -> tuple[dict[str, float], str, list[int]]
     fd_global = float(np.sum(tlp_np - exp_np) / np.sqrt(np.sum(var_np) + 1e-8))
 
     win_bounds = build_sentence_windows(text, offsets, n_tok)
-
     lr_w, lrr_w, fd_w = [], [], []
     for s, e in win_bounds:
         w_lp = tlp_np[s:e]
         w_lr = lr_np[s:e]
         w_diff = w_lp - exp_np[s:e]
         w_var = var_np[s:e]
-
         lr_w.append(-float(np.mean(w_lr)))
         lrr_w.append(-float(np.sum(w_lp) / (np.sum(w_lr) + 1e-8)))
         fd_w.append(float(np.sum(w_diff) / np.sqrt(np.sum(w_var) + 1e-8)))
 
-    lr_w = np.array(lr_w)
-    lrr_w = np.array(lrr_w)
-    fd_w = np.array(fd_w)
-
-    # Защита от выбора окна с техническим мусором: требуем минимум 60% буквенных символов в окне
-    valid_mask = []
-    for s, e in win_bounds:
-        c_s = int(offsets[s + 1][0])
-        c_e = int(offsets[min(e, len(offsets) - 1)][1])
-        win_str = text[c_s:c_e]
-        alpha_ratio = len(re.findall(r"[а-яА-ЯёЁa-zA-Z]", win_str)) / max(1, len(win_str.replace(" ", "")))
-        valid_mask.append(alpha_ratio >= 0.60)
-
-    masked_lr_w = np.where(valid_mask, lr_w, -1e9) if any(valid_mask) else lr_w
-    best_idx = int(np.argmax(masked_lr_w))
-
+    lr_w, lrr_w, fd_w = np.array(lr_w), np.array(lrr_w), np.array(fd_w)
+    best_idx = int(np.argmax(lr_w))
     peak_lr = lr_w[best_idx]
     mean_lr = float(np.mean(lr_w))
     std_lr = float(np.std(lr_w)) if len(lr_w) > 1 else 0.0
@@ -181,19 +168,25 @@ def compute_qwen_forensics(text: str) -> tuple[dict[str, float], str, list[int]]
     left_idx = best_idx
     while left_idx > 0 and lr_w[left_idx - 1] >= expand_thresh:
         left_idx -= 1
-
     right_idx = best_idx
     while right_idx < len(win_bounds) - 1 and lr_w[right_idx + 1] >= expand_thresh:
         right_idx += 1
 
-    span_tok_s = win_bounds[left_idx][0]
-    span_tok_e = win_bounds[right_idx][1]
-
+    span_tok_s, span_tok_e = win_bounds[left_idx][0], win_bounds[right_idx][1]
     merged_span_lr = -float(np.mean(lr_np[span_tok_s:span_tok_e]))
     merged_span_ratio = float((span_tok_e - span_tok_s) / max(n_tok, 1))
 
-    char_start = int(offsets[span_tok_s + 1][0])
+    start_tok_idx = 0 if span_tok_s == 0 else min(span_tok_s + 1, len(offsets) - 1)
+    char_start = int(offsets[start_tok_idx][0])
     char_end = int(offsets[min(span_tok_e, len(offsets) - 1)][1])
+
+    while char_start > 0 and text[char_start - 1] not in ".!?\n":
+        char_start -= 1
+    while char_start < char_end and text[char_start] in " \t\n\"«'":
+        char_start += 1
+    while char_end < len(text) and text[char_end - 1] not in ".!?\n" and text[char_end] not in "\n":
+        char_end += 1
+
     most_ai_chunk = text[char_start:char_end].strip()
 
     llm_feats = {

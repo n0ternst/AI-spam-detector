@@ -349,7 +349,8 @@ class TextDetector:
             merged_span_ratio = float((span_tok_e - span_tok_s) / max(n_tok, 1))
 
             # s_tok + 1 — это первый токен внутри нашего окна (так как метрики сдвинуты на 1 токен из-за labels = ids[1:])
-            char_start = int(offsets[min(span_tok_s + 1, len(offsets) - 1)][0])
+            start_tok_idx = 0 if span_tok_s == 0 else min(span_tok_s + 1, len(offsets) - 1)
+            char_start = int(offsets[start_tok_idx])
             char_end = int(offsets[min(span_tok_e, len(offsets) - 1)][1])
 
             # Дотягиваем влево до начала текущего предложения или абзаца

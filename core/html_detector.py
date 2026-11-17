@@ -222,9 +222,16 @@ class HTMLDetector:
             flags["offscreen"] = 1
 
         m_fs = re.search(r"font-size\s*:\s*(\d+(?:\.\d+)?)\s*(px|pt|em|rem|%)?", style)
-        if m_fs and float(m_fs.group(1)) <= 1.0:
-            reasons.append("zero_font")
-            flags["zero_font"] = 1
+        if m_fs:
+            fs_val = float(m_fs.group(1))
+            fs_unit = (m_fs.group(2) or "").lower()
+            if (
+                (fs_unit in {"em", "rem"} and fs_val <= 0.08)
+                or (fs_unit == "%" and fs_val <= 5.0)
+                or (fs_unit in {"px", "pt", ""} and fs_val <= 1.0)
+            ):
+                reasons.append("zero_font")
+                flags["zero_font"] = 1
 
         if (
             re.search(r"(?:left|top|text-indent|margin-left|margin-top)\s*:\s*-\d{3,5}px", style)
